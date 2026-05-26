@@ -1,0 +1,2706 @@
+"""
+Conversational AI for the NativaCare midwifery chatbot.
+
+Architecture inherited from the Dubai bot, with adaptations:
+
+  - Two LLM calls per turn: `understand()` (NLU only, returns JSON) and
+    `compose_reply()` (drafts open Q&A replies with a targeted DB slice).
+    Booking-flow turns use deterministic templates and skip the LLM.
+
+  - Six conversation states:
+      BROWSING            free Q&A, no booking active
+      SERVICE_SELECTING   helping user choose a service
+      SLOT_PICKING        showing available slots, waiting for pick
+      COLLECTING_DETAILS  slot picked, gathering name/phone/etc.
+      AWAITING_CONFIRM    summary shown, awaiting yes/correction
+      BOOKED              committed
+
+  - Slot picking is the key difference from Dubai: the bot reads the
+    availability engine, presents options to the user, and only accepts
+    times that are actually free.
+
+Public API (used by main.py):
+    get_ai_response(session_id, user_message, source) -> dict
+"""
+
+import os
+import re
+import json as _json
+import time as _time
+from datetime import datetime, timedelta
+from hashlib import md5
+from typing import Optional
+from dotenv import load_dotenv
+from openai import OpenAI
+
+from logger import save_chat_log
+from models import AppointmentLead
+from database import (
+    get_services as _db_get_services,
+    get_midwives as _db_get_midwives,
+    get_midwife_services as _db_get_midwife_services,
+    get_packages as _db_get_packages,
+    get_faqs as _db_get_faqs,
+    get_clinic_info as _db_get_clinic_info,
+    save_appointment,
+    set_session_cache,
+)
+from availability import (
+    get_availability, get_next_available_days,
+    format_slots_human, find_slot,
+)
+
+
+# Thin instrumented wrappers around the database getters. These log each
+# fetch into the per-turn debug buffer for the side panel. The actual
+# caching happens at the _fetch_tab level in database.py — see
+# database.set_session_cache(). When the cache is warm, fetches resolve
+# in 0ms because they never touch the network.
+
+import time as _t_mod
+
+
+def _row_count(result) -> int:
+    if isinstance(result, list):
+        return len(result)
+    if isinstance(result, dict):
+        return 1
+    return 0
+
+
+async def _instrumented(tab_name: str, fn, *args, **kwargs):
+    t0 = _t_mod.perf_counter()
+    try:
+        result = await fn(*args, **kwargs)
+        elapsed = int((_t_mod.perf_counter() - t0) * 1000)
+        # Heuristic: <5ms means we hit the in-memory cache, not the network
+        label = tab_name + (" (cached)" if elapsed < 5 else "")
+        _debug_log_fetch(label, _row_count(result), elapsed)
+        return result
+    except Exception:
+        elapsed = int((_t_mod.perf_counter() - t0) * 1000)
+        _debug_log_fetch(tab_name + " (error)", 0, elapsed)
+        raise
+
+
+async def get_services(*a, **k):         return await _instrumented("services", _db_get_services, *a, **k)
+async def get_midwives(*a, **k):         return await _instrumented("midwives", _db_get_midwives, *a, **k)
+async def get_midwife_services(*a, **k): return await _instrumented("midwife_services", _db_get_midwife_services, *a, **k)
+async def get_packages(*a, **k):         return await _instrumented("packages", _db_get_packages, *a, **k)
+async def get_faqs(*a, **k):             return await _instrumented("faqs", _db_get_faqs, *a, **k)
+async def get_clinic_info(*a, **k):      return await _instrumented("clinic_info", _db_get_clinic_info, *a, **k)
+
+load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+_sessions: dict = {}
+SESSION_TTL_SECONDS = 60 * 60
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+CLINIC_NAME = os.getenv("CLINIC_NAME", "NativaCare")
+
+client = (
+    OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+    if GROQ_API_KEY else None
+)
+
+
+# ---------------------------------------------------------------------------
+# Debug collector — populated per-turn, returned in the /chat response
+# ---------------------------------------------------------------------------
+# Module-global, reset at the top of every get_ai_response() call. Simpler
+# than threading a debug dict through every function. Not safe for true
+# concurrent use across sessions, but FastAPI handles one request per task
+# and we only touch this in the awaited path of one request at a time.
+
+_DEBUG_BUFFER: dict = {}
+
+
+def _debug_reset():
+    global _DEBUG_BUFFER
+    _DEBUG_BUFFER = {
+        "session_id": None,
+        "state_before": None,
+        "state_after": None,
+        "data_fetched": [],   # list of {tab, rows, ms}
+        "llm_calls": [],      # list of {step, model, prompt_chars, response_chars,
+                              #          prompt, response, ms, error}
+        "intent": None,
+        "extracted_slots": {},
+        "corrections": [],
+        "events": [],         # short narrative trace: "applied slot service",
+                              # "rejected doctor", etc.
+    }
+
+
+def _debug_log_fetch(tab: str, row_count: int, ms: int):
+    _DEBUG_BUFFER.setdefault("data_fetched", []).append({
+        "tab": tab, "rows": row_count, "ms": ms,
+    })
+
+
+def _debug_log_llm(step: str, sys_prompt: str, user_messages: list,
+                   response_text: str, ms: int, error: Optional[str] = None):
+    # Combine the user_messages array into a readable prompt for the panel
+    user_block = "\n".join(
+        f"[{m.get('role','?')}] {m.get('content','')}"
+        for m in user_messages
+    )
+    _DEBUG_BUFFER.setdefault("llm_calls", []).append({
+        "step": step,
+        "model": GROQ_MODEL,
+        "prompt_chars": len(sys_prompt) + len(user_block),
+        "response_chars": len(response_text or ""),
+        "system_prompt": sys_prompt,
+        "user_prompt": user_block,
+        "response": response_text,
+        "ms": ms,
+        "error": error,
+    })
+
+
+def _debug_event(text: str):
+    _DEBUG_BUFFER.setdefault("events", []).append(text)
+
+
+def _debug_snapshot() -> dict:
+    return dict(_DEBUG_BUFFER)
+
+# Abu Dhabi area keywords — used for a soft check on home-visit addresses.
+# Not exhaustive; the bot accepts anything but logs a warning if no match.
+ABU_DHABI_KEYWORDS = [
+    "abu dhabi", "al bateen", "bateen", "marina", "saadiyat", "yas",
+    "reem", "khalifa city", "mohamed bin zayed", "mbz", "al raha",
+    "shahama", "khalidiyah", "khalidiya", "corniche", "hudayriyat",
+    "al maryah", "maryah", "al reem",
+]
+
+# States
+STATE_BROWSING = "browsing"
+STATE_SERVICE_SELECTING = "service_selecting"
+STATE_CONFIRMING_SERVICE = "confirming_service"
+STATE_SLOT_PICKING = "slot_picking"
+STATE_COLLECTING_DETAILS = "collecting_details"
+STATE_AWAITING_CONFIRM = "awaiting_confirm"
+STATE_BOOKED = "booked"
+
+# Detail-collection fields, in the order they're asked
+DETAIL_FIELDS = ["patient_name", "phone", "email", "patient_address"]
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def detect_language(text: str) -> str:
+    """v1: English only. Arabic detection is left here as a placeholder so a
+    future translation pass can wire it in."""
+    return "en"
+
+
+def valid(value) -> bool:
+    if value is None:
+        return False
+    s = str(value).strip()
+    return bool(s) and s.lower() not in {"none", "null", "tbd", "unknown", "-", "skip"}
+
+
+def cleanup_old_sessions():
+    now = datetime.utcnow()
+    for sid in list(_sessions):
+        last_seen = _sessions[sid].get("last_seen", now)
+        if (now - last_seen).total_seconds() > SESSION_TTL_SECONDS:
+            _sessions.pop(sid, None)
+
+
+def shorten(text: str, max_words: int = 70) -> str:
+    words = (text or "").split()
+    return text if len(words) <= max_words else " ".join(words[:max_words])
+
+
+def append_history(session: dict, user_msg: str, assistant_msg: str):
+    session["history"].append({"role": "user", "content": user_msg})
+    session["history"].append({"role": "assistant", "content": assistant_msg})
+    session["history"] = session["history"][-12:]
+
+
+# ---------------------------------------------------------------------------
+# Track services the bot just recommended, so the user can refer to them
+# implicitly ("book these", "yes book them", etc.)
+# ---------------------------------------------------------------------------
+
+async def _record_recommended_services(session: dict, reply_text: str):
+    """Scan the LLM's reply for service-name mentions and store them on
+    the session as `last_recommended`. Used by the book-intent handler
+    when the user says 'these' / 'them' / 'those' without naming a service.
+
+    Also records mentioned packages under `last_mentioned_packages` so
+    that 'book it' after a package discussion is recognized as a
+    package-booking attempt (and routed to phone-redirect)."""
+    if not reply_text:
+        return
+    services = await get_services()
+    text_lc = reply_text.lower()
+    mentioned = []
+    for s in services:
+        name = s.get("service_name", "")
+        if not name or len(name) < 4:
+            continue
+        if name.lower() in text_lc:
+            mentioned.append({
+                "service_id": s["service_id"],
+                "service_name": name,
+            })
+    # Cap at 6 — anything more is a "we offer X services" list, not a
+    # focused recommendation. Drop entirely so we don't accidentally
+    # treat menu dumps as targeted recommendations.
+    if 1 <= len(mentioned) <= 6:
+        session["last_recommended"] = mentioned
+        _debug_event(f"Recorded {len(mentioned)} recommended services from reply")
+    else:
+        # Clear stale recommendations if this turn didn't focus on a few
+        session.pop("last_recommended", None)
+
+    # Track mentioned packages
+    try:
+        packages = await get_packages()
+    except Exception:
+        packages = []
+    pkg_mentions = []
+    for p in packages:
+        name = p.get("package_name", "")
+        if not name or len(name) < 4:
+            continue
+        if name.lower() in text_lc:
+            pkg_mentions.append(name)
+    if 1 <= len(pkg_mentions) <= 3:
+        # Few packages mentioned — likely focused discussion. Useful signal.
+        session["last_mentioned_packages"] = pkg_mentions
+        _debug_event(f"Recorded {len(pkg_mentions)} mentioned packages from reply")
+    else:
+        # Many packages = a list dump, not a focused mention
+        session.pop("last_mentioned_packages", None)
+
+
+_PRONOUN_BOOK_PATTERNS = [
+    "book these", "book those", "book them", "book it",
+    "book that one", "book that", "book this", "book this one",
+    "book one of those", "book one of these", "book one of them",
+    "let's book these", "let's book those", "let's book them",
+    "yes book", "ok book", "okay book",
+]
+
+
+def references_recent_recommendations(user_msg: str) -> bool:
+    """Does the user's message look like 'book the things you just mentioned'?"""
+    if not user_msg:
+        return False
+    lc = user_msg.lower().strip()
+    return any(p in lc for p in _PRONOUN_BOOK_PATTERNS)
+
+
+# Shared package-reference detection. Used in CONFIRMING_SERVICE and
+# AWAITING_CONFIRM to graceful-redirect when the user names a package
+# (which isn't bookable through chat) instead of a single service.
+_VAGUE_PACKAGE_SIGNALS = [
+    "the package", "want the package", "package thing", "package instead",
+    "switch to the package", "switch to package", "do the package",
+    "starter package", "wellbeing package", "recovery package",
+    "the bundle", "want the bundle", "do the bundle",
+    "change the deal", "change the service", "different deal",
+    "different service", "the other one", "the other thing",
+    "other option", "another one",
+]
+
+
+_DENY_WITH_ALTERNATIVE_PREFIXES = [
+    "no,", "no ", "not this", "not that", "nope,", "nope ",
+    "no thanks,", "no thanks ", "instead", "actually ",
+    "rather ", "i'd rather", "id rather",
+]
+
+
+def looks_like_deny_with_alternative(user_msg: str) -> bool:
+    """Does the user start with a 'no' AND name an alternative?
+    e.g. 'no, the newborn package' or 'no I want hypnobirthing'.
+    Lets us distinguish from a clean 'no' (which is pure cancellation)."""
+    if not user_msg:
+        return False
+    lc = user_msg.lower().strip()
+    has_no = any(lc.startswith(p) for p in ("no ", "no,", "nope", "not "))
+    if not has_no:
+        return False
+    # Length > 4 words suggests they named an alternative
+    words = lc.split()
+    return len(words) >= 3
+
+
+async def references_package(user_msg: str) -> Optional[str]:
+    """If the user mentioned a package by name (or used a vague package
+    phrasing), return the package name (or 'package' as a generic). Else
+    return None."""
+    if not user_msg:
+        return None
+    msg_lc = user_msg.lower()
+
+    # Match against actual package names from the catalog
+    try:
+        packages = await get_packages()
+    except Exception:
+        packages = []
+    for p in packages:
+        name = (p.get("package_name") or "").lower().strip()
+        if not name:
+            continue
+        # Match if all significant words appear in the message (handles
+        # "newborn starter" matching "Newborn Starter" exactly, and also
+        # partial "starter package" matches via the signal list below).
+        if name in msg_lc:
+            return p.get("package_name")
+        # Try matching distinctive substring (first 2 words)
+        first_words = " ".join(name.split()[:2])
+        if first_words and first_words in msg_lc:
+            return p.get("package_name")
+
+    # Fall back to vague package signals
+    if any(s in msg_lc for s in _VAGUE_PACKAGE_SIGNALS):
+        return "package"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Category word detection — distinguish "workshop" (category) from a specific
+# workshop name like "Hypnobirthing Class"
+# ---------------------------------------------------------------------------
+# These match the `category` column in the services tab. Singular and plural
+# forms; we lowercase the user message and look for these as whole-ish tokens.
+_CATEGORY_WORDS = {
+    "preconception": "Preconception",
+    "pregnancy services": "Pregnancy",
+    "pregnancy service": "Pregnancy",
+    "antenatal services": "Pregnancy",
+    "workshop": "Workshop",
+    "workshops": "Workshop",
+    "classes": "Workshop",
+    "wellbeing": "Wellbeing",
+    "well being": "Wellbeing",
+    "postnatal services": "Postnatal",
+    "postnatal service": "Postnatal",
+    "postnatal care": "Postnatal",
+    "newborn services": "Newborn",
+    "baby services": "Newborn",
+    "baby care": "Newborn",
+}
+
+
+def _detect_category_word(message: str) -> Optional[str]:
+    """Return the matching category name (e.g. 'Workshop') if the user's
+    message looks like a category word rather than a specific service.
+    Returns None if no match."""
+    if not message:
+        return None
+    msg_lc = message.lower()
+    # Sort by length descending so "pregnancy services" matches before "pregnancy"
+    for phrase, category in sorted(_CATEGORY_WORDS.items(), key=lambda x: -len(x[0])):
+        if phrase in msg_lc:
+            return category
+    return None
+
+
+async def _service_explicit_in_message(message: str) -> bool:
+    """Does the message contain an actual specific service name?
+    Used to avoid the category-guard firing when the user named a
+    specific service (e.g. 'I want the Hypnobirthing workshop').
+
+    We match service names against the message text. A name only counts
+    if it's at least two words OR is distinctive enough not to match
+    common English (e.g. 'Hypnobirthing' is distinctive; 'Care' is not).
+    """
+    if not message:
+        return False
+    msg_lc = message.lower()
+    try:
+        services = await get_services()
+    except Exception:
+        return False
+    for s in services:
+        name = (s.get("service_name") or "").lower().strip()
+        if not name:
+            continue
+        # Multi-word names: full substring match
+        if len(name.split()) >= 2 and name in msg_lc:
+            return True
+        # Distinctive single words (rare in English): match on word boundary
+        if name in ("hypnobirthing", "vbac", "preconception"):
+            if name in msg_lc:
+                return True
+    return False
+
+
+async def _services_in_category(category: str) -> list:
+    """All bookable services in a given category."""
+    bookable = await bookable_services()
+    return [s for s in bookable
+            if (s.get("category") or "").strip().lower() == category.lower()]
+
+
+# ---------------------------------------------------------------------------
+# Emergency detection — midwifery-specific cues
+# ---------------------------------------------------------------------------
+# Two layers:
+#  1. The understand prompt may classify intent as "emergency". We trust
+#     the LLM for nuanced cases but ALSO apply a negation/future-tense
+#     guard below to catch obvious false positives.
+#  2. A keyword regex short-circuits before any LLM call for clearly
+#     active emergencies (heavy bleeding, water broke, etc.). We keep
+#     this list TIGHT — broad terms like "contractions" or "labor" alone
+#     are too common in normal midwifery conversation to escalate on.
+
+# Strong emergency keywords — almost always describe an active emergency
+# in the present moment. No future-tense escape applies here.
+EMERGENCY_KEYWORDS = [
+    "heavy bleeding", "bleeding a lot", "bleeding heavily",
+    "water broke", "waters broke", "my water just broke",
+    "baby not breathing", "baby is not breathing", "baby isn't breathing",
+    "not breathing", "isn't breathing",
+    "blue lips", "convulsions", "seizure",
+    "unconscious", "passed out",
+    "can't breathe", "cant breathe", "trouble breathing",
+    "severe headache", "blurred vision", "rapid swelling",
+    "can't feel baby", "cant feel baby", "no fetal movement",
+    "baby isn't moving", "baby is not moving",
+]
+
+# Phrases that signal a NON-emergency even if other keywords appear nearby.
+# Examples we want to NOT escalate:
+#   "I'm about to give birth in a few weeks"   (future)
+#   "Not in labor yet"                          (negation context)
+#   "I want a hypnobirthing class for labor"   (planning)
+# We DON'T list bare "not" as a marker because "the baby is not breathing"
+# would be wrongly downgraded.
+_NON_EMERGENCY_MARKERS = [
+    "not in labor", "not in active",
+    "not right now", "not yet", "not having",
+    "soon", "next week", "next month", "next year",
+    "in a few", "in a couple", "due in", "due date",
+    "expecting in", "planning for", "preparing for",
+    "want to learn", "want to know", "info about", "information about",
+    "class about", "workshop about", "learn about", "tell me about",
+    "what is", "what's", "education", "educational",
+]
+
+
+def is_emergency(message: str) -> bool:
+    """Short-circuit emergency detector — returns True ONLY for clearly
+    active emergencies. False positives here cause the bot to halt and
+    refer to 998, so the bar must be high."""
+    if not message:
+        return False
+    m = " " + message.lower() + " "
+    if any(marker in m for marker in _NON_EMERGENCY_MARKERS):
+        return False
+    return any(k in m for k in EMERGENCY_KEYWORDS)
+
+
+def emergency_reply() -> str:
+    return ("This sounds urgent — please call Abu Dhabi emergency services "
+            "on 998 or go to the nearest hospital immediately. NativaCare is "
+            "not an emergency service.")
+
+
+# ---------------------------------------------------------------------------
+# Human-handoff detection
+# ---------------------------------------------------------------------------
+# When the user wants to talk to an actual person (because they want
+# medical advice, complex case discussion, package booking, etc.), the
+# bot should immediately give them the contact info and let them know
+# their booking-in-progress is preserved. This fires in any state.
+#
+# Phrases are deliberately tight to avoid false-positives on legitimate
+# booking language. Things like "talk about the workshop" don't trigger.
+
+_HANDOFF_PHRASES = [
+    "talk to someone", "talk to a person", "talk to a midwife",
+    "talk to a real", "talk to staff", "talk to a human",
+    "speak to someone", "speak to a person", "speak to a midwife",
+    "speak to staff", "speak to a human", "speak to a real",
+    "speak with someone", "speak with a person",
+    "connect me", "put me through", "transfer me",
+    "call me back", "call me",
+    "speak to a doctor", "talk to a doctor",
+    "speak to a real person", "talk to a real person",
+    "speak to an agent", "talk to an agent",
+    "speak to a representative", "talk to a representative",
+    "i want a human", "real person please",
+    "who can tell", "who can help me",
+    "human assistant",
+]
+
+
+def wants_human_handoff(message: str) -> bool:
+    """Does the user want to talk to an actual person, not the bot?"""
+    if not message:
+        return False
+    lc = message.lower()
+    return any(p in lc for p in _HANDOFF_PHRASES)
+
+
+def handoff_reply(session: dict) -> str:
+    """Build the response for a handoff request. If a booking is in
+    progress, mention it briefly so the user knows their state isn't
+    lost."""
+    base = ("You can reach our team directly at "
+            "+971 50 729 7197 or email info@nativacare.com. "
+            "Someone will be able to help with anything I can't.")
+    lead = session.get("lead") or {}
+    candidate = session.get("candidate_service") or {}
+    in_progress = (lead.get("service_name") or candidate.get("service_name"))
+    if in_progress:
+        base += (f"\n\nYour booking-in-progress for "
+                 f"{in_progress} is saved — come back any time "
+                 f"to finish it.")
+    return base
+
+
+# ---------------------------------------------------------------------------
+# LLM Call 1: Understand (JSON intent + slot extraction)
+# ---------------------------------------------------------------------------
+
+UNDERSTAND_SYSTEM_PROMPT_TMPL = """You are an NLU module for the NativaCare midwifery chatbot in Abu Dhabi. Read the conversation and the user's latest message, then return STRICT JSON only — no prose, no markdown, no code fences.
+
+Output schema:
+{{
+  "intent": one of:
+    "book"              - user wants to start booking an appointment, OR
+                          (CRITICAL) user has an ACTIVE booking in progress
+                          (see SESSION STATE below) and is asking about
+                          availability, timings, dates, slots — they want
+                          to advance the booking. "what days does it
+                          occur", "what do you have available", "show me
+                          times", "when can I come" — when an active
+                          service is set, all of these mean "book".
+    "confirm"           - confirming (yes, ok, sure, proceed, that works)
+    "deny"              - declining (no, cancel, stop, nevermind)
+    "correction"        - user is changing a previously-given detail
+    "pick_slot"         - user is picking a time slot from a list shown to them
+    "pick_service"      - user is naming a service to book
+    "service_list"      - asking what services are offered (ONLY when no
+                          active service is set — otherwise see "book")
+    "price_question"    - asking about cost / fees
+    "midwife_list"      - asking about midwives / who works there
+    "midwife_question"  - asking about a specific midwife
+    "package_question"  - asking about packages / bundles
+    "availability_question" - asking when a SPECIFIC midwife is available
+                              (NOT when a service is — that's "book" if
+                              the service is active, "service_list" if not)
+    "faq"               - asking a general factual question (location, FAQs)
+    "emergency"         - user describes an ACTIVE medical emergency
+                          happening NOW (heavy bleeding NOW, water broke
+                          NOW, baby not breathing NOW). General pregnancy
+                          questions, planning ahead, or future events
+                          ("about to give birth in 3 weeks", "due soon",
+                          "expecting in October") are NOT emergencies —
+                          use "general" for those.
+    "greeting"          - ONLY the literal openers: hello / hi / hey /
+                          salam / good morning. Anything longer or
+                          ambiguous ("not right now", "soon", short
+                          replies, etc.) is NOT a greeting — use
+                          "general" or "answer" instead.
+    "thanks"            - thanks / bye
+    "answer"            - user is answering a question the bot just asked
+    "general"           - other / open-ended question (DEFAULT if unsure)
+
+  "slots": {{           // ONLY for slots explicitly mentioned in THIS message.
+                       // Use null otherwise.
+    "service_name": null | exact service name from CATALOG below,
+    "midwife_name": null | exact midwife first name from ROSTER below,
+    "package_name": null | exact package name from PACKAGES below,
+    "appointment_date": null | "YYYY-MM-DD",
+    "appointment_time": null | "HH:MM" (24h),
+    "patient_name": null | the user's name,
+    "phone": null | digits with optional + and spaces,
+    "email": null | valid email,
+    "patient_address": null | free-text address for home visit,
+    "location_preference": null | "home" | "clinic" | "online"
+  }},
+
+  "corrections": []    // List of slot names the user is EXPLICITLY changing.
+}}
+
+SESSION STATE:
+{session_state}
+
+CATALOG (services):
+{service_catalog}
+
+ROSTER (midwives):
+{midwife_roster}
+
+PACKAGES:
+{package_list}
+
+Rules:
+- Be lenient with typos.
+- Today's date is {today}. "tomorrow" = next day. Resolve relative dates to YYYY-MM-DD.
+- A user typing just a time like "10am" or "14:30" while we're showing slots is "pick_slot".
+- A user typing just a service name with no clear intent is "pick_service" if a service catalog was offered, else "general".
+- "yes" / "ok" / "sure" → intent: "confirm". Always.
+- CRITICAL: If SESSION STATE shows an active service, questions about WHEN it's available (date/time/slots/scheduling) mean the user wants to advance to slot picking — classify as "book". But questions about WHAT the service is (its content, duration, how many sessions, structure, what it includes, "how does it work", "what's involved") are still "general" or "service_list" — DO NOT classify these as "book". Example: "what days are available?" → book. "how many days is it for?" → general (asking about program length, not scheduling).
+- Return JSON only. No commentary."""
+
+
+async def _build_understand_prompt(session: Optional[dict] = None) -> str:
+    services, midwives, packages, clinic = await _gather(
+        bookable_services, get_midwives, get_packages, get_clinic_info
+    )
+    svc_list = "\n".join(f"- {s['service_name']} (id: {s['service_id']})"
+                         for s in services[:30])
+    mw_list = "\n".join(f"- {m['midwife_name']} (id: {m['midwife_id']})"
+                        for m in midwives[:20])
+    pkg_list = "\n".join(f"- {p['package_name']} (id: {p['package_id']})"
+                         for p in packages[:15]) or "(none)"
+
+    # Build a session-state block telling the LLM what's already booked
+    # in the active lead. This is the single most important piece of
+    # context for intent classification: "what's available" means very
+    # different things depending on whether a service is set.
+    state_block = "No active booking. State: BROWSING."
+    if session:
+        lead = session.get("lead") or {}
+        state = session.get("state", "browsing")
+        candidate = session.get("candidate_service") or {}
+        active_parts = []
+        if lead.get("service_name"):
+            active_parts.append(f"Active service: {lead['service_name']}")
+        if lead.get("midwife_name"):
+            active_parts.append(f"Midwife: {lead['midwife_name']}")
+        if lead.get("appointment_date"):
+            active_parts.append(f"Date: {lead['appointment_date']}")
+        if lead.get("appointment_time"):
+            active_parts.append(f"Time: {lead['appointment_time']}")
+
+        # CRITICAL: if a candidate service is pending confirmation, the
+        # bot is asking yes/no. Surface this so the LLM classifies "yes"
+        # as confirm and "no" as deny (instead of general/answer).
+        if candidate.get("service_name"):
+            state_block = (
+                f"State: {state}. AWAITING USER CONFIRMATION for "
+                f"\"{candidate['service_name']}\". The bot's previous "
+                f"message asked the user to confirm booking this service. "
+                f"Treat 'yes' / 'ok' / 'sure' as intent=confirm and "
+                f"'no' / 'cancel' as intent=deny."
+            )
+        elif active_parts:
+            state_block = (f"ACTIVE booking in progress. State: {state}.\n"
+                           + "\n".join(f"  - {p}" for p in active_parts))
+        else:
+            state_block = f"No active booking. State: {state}."
+
+    return UNDERSTAND_SYSTEM_PROMPT_TMPL.format(
+        session_state=state_block,
+        service_catalog=svc_list,
+        midwife_roster=mw_list,
+        package_list=pkg_list,
+        today=datetime.now().strftime("%Y-%m-%d"),
+    )
+
+
+async def _gather(*coros):
+    """Tiny helper: call a bunch of async fns in parallel and return their
+    awaited results. Avoids importing asyncio.gather everywhere."""
+    import asyncio
+    return await asyncio.gather(*(c() for c in coros))
+
+
+async def _llm_understand_call(messages: list, sys_prompt: str,
+                               strict: bool = False) -> str:
+    extra = ""
+    if strict:
+        extra = ("\n\nIMPORTANT: Your previous response was not valid JSON. "
+                 "Return ONLY a single JSON object. No markdown. Start with "
+                 "{ and end with }.")
+    full_sys = sys_prompt + extra
+    t0 = _time.perf_counter()
+    try:
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "system", "content": full_sys}] + messages,
+            temperature=0.0,
+            max_tokens=400,
+            response_format={"type": "json_object"},
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        elapsed = int((_time.perf_counter() - t0) * 1000)
+        _debug_log_llm(
+            step=("understand-retry" if strict else "understand"),
+            sys_prompt=full_sys,
+            user_messages=messages,
+            response_text=text,
+            ms=elapsed,
+        )
+        return text
+    except Exception as e:
+        elapsed = int((_time.perf_counter() - t0) * 1000)
+        _debug_log_llm(
+            step=("understand-retry" if strict else "understand"),
+            sys_prompt=full_sys,
+            user_messages=messages,
+            response_text="",
+            ms=elapsed,
+            error=str(e),
+        )
+        raise
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+    text = re.sub(r"\s*```$", "", text)
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return _json.loads(m.group(0))
+    except Exception:
+        return None
+
+
+async def understand(session: dict, user_message: str) -> dict:
+    """Run the LLM understand call. Returns parsed dict, or a regex fallback
+    on failure."""
+    if not client:
+        return _fallback_understand(session, user_message)
+
+    history = session.get("history", [])[-6:]
+    messages = history + [{"role": "user", "content": user_message}]
+
+    sys_prompt = await _build_understand_prompt(session)
+
+    # First attempt
+    try:
+        raw = await _llm_understand_call(messages, sys_prompt, strict=False)
+        parsed = _extract_json(raw)
+        if _is_valid_understand_shape(parsed):
+            return await _normalize_understand(parsed, user_message)
+    except Exception as e:
+        print(f"[Understand: attempt 1] {e}")
+
+    # Retry stricter
+    try:
+        raw = await _llm_understand_call(messages, sys_prompt, strict=True)
+        parsed = _extract_json(raw)
+        if _is_valid_understand_shape(parsed):
+            return await _normalize_understand(parsed, user_message)
+    except Exception as e:
+        print(f"[Understand: attempt 2] {e}")
+
+    print("[Understand] falling back to regex classifier")
+    return _fallback_understand(session, user_message)
+
+
+def _is_valid_understand_shape(parsed) -> bool:
+    """Check the parsed JSON has the basic shape we need.
+    Tolerates `slots: null` by treating null as 'no slots extracted' instead
+    of failing the validation — avoids burning a retry on a meaningless miss."""
+    if not parsed or not isinstance(parsed, dict):
+        return False
+    if "intent" not in parsed:
+        return False
+    slots = parsed.get("slots")
+    if slots is None:
+        parsed["slots"] = {}  # coerce null → {}
+        return True
+    return isinstance(slots, dict)
+
+
+VALID_INTENTS = {
+    "book", "confirm", "deny", "correction", "pick_slot", "pick_service",
+    "service_list", "price_question", "midwife_list", "midwife_question",
+    "package_question", "availability_question", "faq", "emergency",
+    "greeting", "thanks", "answer", "general",
+}
+
+
+async def _normalize_understand(d: dict, user_message: str) -> dict:
+    """Validate slot values against the DB. Drop anything that doesn't match."""
+    slots = d.get("slots") or {}
+    cleaned = {}
+
+    services, midwives, packages = await _gather(
+        get_services, get_midwives, get_packages
+    )
+    svc_by_name = {s["service_name"].lower(): s for s in services}
+    mw_by_name = {m["midwife_name"].lower(): m for m in midwives}
+    pkg_by_name = {p["package_name"].lower(): p for p in packages}
+
+    # service_name → resolve to id+name
+    svc = slots.get("service_name")
+    if isinstance(svc, str) and svc.strip().lower() in svc_by_name:
+        match = svc_by_name[svc.strip().lower()]
+        cleaned["service_id"] = match["service_id"]
+        cleaned["service_name"] = match["service_name"]
+
+    # midwife
+    mw = slots.get("midwife_name")
+    if isinstance(mw, str) and mw.strip().lower() in mw_by_name:
+        match = mw_by_name[mw.strip().lower()]
+        cleaned["midwife_id"] = match["midwife_id"]
+        cleaned["midwife_name"] = match["midwife_name"]
+
+    # package
+    pkg = slots.get("package_name")
+    if isinstance(pkg, str) and pkg.strip().lower() in pkg_by_name:
+        match = pkg_by_name[pkg.strip().lower()]
+        cleaned["package_id"] = match["package_id"]
+        cleaned["package_name"] = match["package_name"]
+
+    # date
+    date_v = slots.get("appointment_date")
+    if isinstance(date_v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_v):
+        cleaned["appointment_date"] = date_v
+
+    # time
+    time_v = slots.get("appointment_time")
+    if isinstance(time_v, str) and re.fullmatch(r"\d{1,2}:\d{2}", time_v):
+        h, m = time_v.split(":")
+        if 0 <= int(h) <= 23 and 0 <= int(m) <= 59:
+            cleaned["appointment_time"] = f"{int(h):02d}:{m}"
+
+    # name
+    name = slots.get("patient_name")
+    if isinstance(name, str) and 2 <= len(name.strip()) <= 50:
+        cleaned["patient_name"] = name.strip()[:50]
+
+    # phone
+    phone = slots.get("phone")
+    if isinstance(phone, str) and len(re.sub(r"\D", "", phone)) >= 7:
+        cleaned["phone"] = phone.strip()
+
+    # email
+    email = slots.get("email")
+    if isinstance(email, str) and re.fullmatch(
+            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", email):
+        cleaned["email"] = email
+
+    # address (light validation only — addresses are messy)
+    addr = slots.get("patient_address")
+    if isinstance(addr, str) and 5 <= len(addr.strip()) <= 200:
+        cleaned["patient_address"] = addr.strip()
+
+    # location preference — only accept if grounded in the user's message.
+    # The LLM sometimes infers "clinic" / "home" from the bot's previous
+    # turn (e.g. bot said "only available at clinic", user replied "okay" —
+    # LLM extracted location_preference: clinic from context). That's a
+    # hallucination relative to what the user said and would silently set
+    # an incorrect location, so we require the user to have mentioned it.
+    loc = slots.get("location_preference")
+    if loc in ("home", "clinic", "online"):
+        msg_low = (user_message or "").lower()
+        location_aliases = {
+            "home": ["home", "house", "doorstep", "visit", "at my place",
+                     "come to me", "my apartment", "my flat", "address"],
+            "clinic": ["clinic", "office", "in person", "come in", "come to you",
+                       "your place", "at the clinic"],
+            "online": ["online", "virtual", "video", "zoom", "remote",
+                       "phone call", "over the phone"],
+        }
+        aliases = location_aliases.get(loc, [])
+        if not user_message or any(a in msg_low for a in aliases):
+            cleaned["location_preference"] = loc
+        # else: drop silently — the value isn't grounded in what the user said
+
+    # corrections — only keep slots we accepted
+    corrections = [
+        c for c in (d.get("corrections") or [])
+        if isinstance(c, str) and any(c in k for k in cleaned)
+    ]
+
+    intent = d.get("intent", "general")
+    if intent not in VALID_INTENTS:
+        intent = "general"
+
+    return {"intent": intent, "slots": cleaned, "corrections": corrections}
+
+
+def _fallback_understand(session: dict, user_message: str) -> dict:
+    """Regex fallback when LLM is unavailable. Keeps the bot working at a
+    degraded level — no slot extraction, just rough intent."""
+    if is_emergency(user_message):
+        return {"intent": "emergency", "slots": {}, "corrections": []}
+    msg = user_message.lower().strip()
+    if msg in {"yes", "ok", "okay", "sure", "proceed", "confirm", "yep"}:
+        return {"intent": "confirm", "slots": {}, "corrections": []}
+    if msg in {"no", "cancel", "stop", "nevermind", "nope"}:
+        return {"intent": "deny", "slots": {}, "corrections": []}
+    if msg in {"hi", "hello", "hey", "salam"}:
+        return {"intent": "greeting", "slots": {}, "corrections": []}
+    if any(s in msg for s in ("book", "appointment", "schedule")):
+        return {"intent": "book", "slots": {}, "corrections": []}
+    if any(s in msg for s in ("service", "what do you offer")):
+        return {"intent": "service_list", "slots": {}, "corrections": []}
+    if any(s in msg for s in ("price", "cost", "how much", "fee")):
+        return {"intent": "price_question", "slots": {}, "corrections": []}
+    return {"intent": "general", "slots": {}, "corrections": []}
+
+
+# ---------------------------------------------------------------------------
+# LLM Call 2: Compose (open Q&A with targeted DB slice)
+# ---------------------------------------------------------------------------
+
+COMPOSE_SYSTEM_PROMPT_TMPL = """You are a warm, professional midwife assistant for {clinic} in Abu Dhabi.
+
+SAFETY: Never diagnose, prescribe, or replace a midwife or doctor. For emergencies say to call 998 or go to the nearest hospital.
+
+STYLE:
+- Warm, supportive, factual. Use ONLY the CONTEXT below — do not invent prices, midwives, or services.
+- If a question can't be answered from CONTEXT, say so and offer to help with bookings.
+
+PHRASING:
+- When the user asks about timings, availability, schedules, or "when" — say you can show real available slots once they pick a service or class. Do NOT deflect to the phone for booking timings. Example: "I can show available slots once we pick a service — reply 'book Hypnobirthing' (or whichever) and I'll show times."
+- When you need to refer the user to phone/email (e.g. service genuinely can't be arranged through chat), give the contact info directly in the reply: "Call +971507297197 or email info@nativacare.com."
+- Don't offer to "help contact" — just give the info.
+- When you offer to do something (book, show slots, etc.), tell the user the EXACT phrase to reply with. Example: instead of "would you like to proceed?", say "reply 'book it' and I'll show available times." Don't ask vague yes/no questions you can't act on.
+- Do NOT offer to "show you available slots" or "show times" as a follow-up. If a service is active, suggest the user reply "book it" — the booking flow will show the slots, not you.
+- CRITICAL — PACKAGES: Packages (Pregnancy Foundation, Full Caseload Care, Postnatal Recovery Bundle, Newborn Starter, Mummy and Baby Wellbeing, or anything in the PACKAGES section of the catalog) are NOT bookable through chat. NEVER tell the user to "reply 'book [package name]'" or say a package "is available" to book. When discussing a package, ALWAYS include the phone number: "To book the Newborn Starter, call +971507297197 or email info@nativacare.com." If the user wants a single service instead, suggest one from the bookable services list.
+
+LENGTH AND FORMAT:
+- For LISTING questions ("what services do you offer", "who are your midwives", "what packages do you have"): list the items. Up to 140 words. Use a brief intro sentence followed by a bulleted list. Don't say "various" or "many" — list them.
+- For OTHER questions: 3 short sentences max, ~70 words.
+
+CONTEXT:
+{context}"""
+
+
+async def _build_compose_context(intent: str, slots: dict,
+                                 session: Optional[dict] = None) -> str:
+    """Return a tight DB slice for the open-Q&A LLM call."""
+    parts = []
+    clinic = await get_clinic_info()
+    parts.append(f"Clinic: {clinic.get('clinic_name', CLINIC_NAME)}")
+    parts.append(f"Address: {clinic.get('address', '')}")
+    parts.append(f"Phone: {clinic.get('phone', '')}")
+    if clinic.get("demo_mode", "").upper() == "TRUE":
+        parts.append("(Note: this deployment uses demo data; verify with the clinic.)")
+
+    # If a booking is in progress, surface the active service details FIRST.
+    # The LLM was answering "how much would it cost?" with "I don't have
+    # enough information" because the active lead wasn't in the context.
+    lead = (session or {}).get("lead") or {}
+    if lead.get("service_id"):
+        services = await get_services()
+        active = next(
+            (s for s in services if s["service_id"] == lead["service_id"]),
+            None,
+        )
+        if active:
+            price = lead.get("price_aed") or active.get("default_price_aed") or "?"
+            parts.append(
+                f"\nACTIVE booking (the user is mid-booking THIS):\n"
+                f"- Service: {active['service_name']}\n"
+                f"- Price: AED {price}\n"
+                f"- Duration: {active.get('duration_minutes', '?')} min\n"
+                f"- Location: {active.get('location_type', '?')}\n"
+                f"- Date: {lead.get('appointment_date', 'not picked yet')}\n"
+                f"- Time: {lead.get('appointment_time', 'not picked yet')}\n"
+                f"- Midwife: {lead.get('midwife_name', 'will be assigned')}"
+            )
+
+    need_services = intent in ("service_list", "price_question", "general", "faq")
+    need_midwives = intent in ("midwife_list", "midwife_question", "general")
+    need_packages = intent in ("package_question", "price_question", "general")
+    need_faqs = intent in ("faq", "general")
+
+    # Always include the bookable-service list, even on intents that don't
+    # need details — this way the LLM knows what we CAN'T offer if asked.
+    bookable = await bookable_services()
+    bookable_names = {s["service_name"] for s in bookable}
+    parts.append("\nBookable services (only these can be booked):")
+    if need_services:
+        for s in bookable[:20]:
+            parts.append(
+                f"- {s['service_name']} ({s.get('category', '')}): "
+                f"AED {s.get('default_price_aed', '?')}, "
+                f"{s.get('duration_minutes', '?')} min, "
+                f"location: {s.get('location_type', '')}"
+            )
+    else:
+        # Compact list, just names — so the LLM can recognize what's offered
+        # without bloating the prompt.
+        for s in bookable[:20]:
+            parts.append(f"- {s['service_name']}")
+
+    # Tell the LLM about advertised-but-unbookable services explicitly, so
+    # it doesn't keep talking about them in compose replies after they
+    # came up in earlier turns.
+    all_services = await get_services()
+    unbookable_names = [
+        s["service_name"] for s in all_services
+        if s["service_name"] not in bookable_names
+    ]
+    if unbookable_names:
+        parts.append(
+            "\nServices we OFFER but don't have a midwife scheduled for "
+            "right now (mention by name if asked 'what else do you offer'; "
+            "say something like '... — for those, call +971507297197 to "
+            "arrange'): "
+            + ", ".join(unbookable_names[:15])
+        )
+
+    if need_midwives:
+        midwives = await get_midwives()
+        parts.append("\nMidwives:")
+        for m in midwives[:10]:
+            parts.append(
+                f"- {m['midwife_name']}: {m.get('qualifications', '')}, "
+                f"{m.get('years_experience', '?')} yrs, "
+                f"languages: {m.get('languages', '')}"
+            )
+
+    if need_packages:
+        packages = await get_packages()
+        if packages:
+            parts.append("\nPackages:")
+            for p in packages[:10]:
+                parts.append(
+                    f"- {p['package_name']}: AED {p.get('total_price_aed', '?')}, "
+                    f"{p.get('description', '')[:120]}"
+                )
+
+    if need_faqs:
+        faqs = await get_faqs()
+        if faqs:
+            parts.append("\nFAQs:")
+            for f in faqs[:10]:
+                parts.append(f"- Q: {f['question']}\n  A: {f['answer'][:300]}")
+
+    return "\n".join(parts)
+
+
+async def compose_reply(session: dict, user_message: str,
+                        understanding: dict) -> str:
+    """LLM call 2 — friendly reply using targeted DB slice."""
+    if not client:
+        return ("I can help with services, prices, midwives, packages, "
+                "or bookings. What would you like to know?")
+    t0 = _time.perf_counter()
+    sys_prompt = ""
+    messages = []
+    try:
+        context = await _build_compose_context(
+            understanding["intent"], understanding["slots"], session
+        )
+        sys_prompt = COMPOSE_SYSTEM_PROMPT_TMPL.format(
+            clinic=CLINIC_NAME, context=context,
+        )
+        history = session.get("history", [])[-6:]
+        # Build the user-side messages separately so we can log them cleanly
+        user_messages = history + [{"role": "user", "content": user_message}]
+        messages = [{"role": "system", "content": sys_prompt}] + user_messages
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=320,
+        )
+        text = shorten((resp.choices[0].message.content or "").strip(),
+                       max_words=180)
+        elapsed = int((_time.perf_counter() - t0) * 1000)
+        _debug_log_llm(
+            step="compose",
+            sys_prompt=sys_prompt,
+            user_messages=user_messages,
+            response_text=text,
+            ms=elapsed,
+        )
+        # After the reply is generated, scan for any service names it
+        # mentioned. Store them on the session so that if the user replies
+        # "book those" or "book these classes", we know what they meant
+        # without forcing them to repeat the names. See find_recommended_in_reply.
+        await _record_recommended_services(session, text)
+        return text
+    except Exception as e:
+        elapsed = int((_time.perf_counter() - t0) * 1000)
+        _debug_log_llm(
+            step="compose",
+            sys_prompt=sys_prompt,
+            user_messages=messages,
+            response_text="",
+            ms=elapsed,
+            error=str(e),
+        )
+        print(f"[Compose error] {e}")
+        # Honest error handling: tell the user what happened, give them
+        # contact info, and note that any booking-in-progress is preserved.
+        # State is NOT cleared — the user can retry in a moment or come
+        # back later and pick up where they left off.
+        return llm_error_reply(session, e)
+
+
+def is_rate_limit_error(err: Exception) -> bool:
+    """Detect the Groq rate-limit (429) error specifically, so we can give
+    a clearer message ('try in a minute') instead of a generic 'try again'."""
+    err_str = str(err).lower()
+    return (
+        "429" in err_str
+        or "rate limit" in err_str
+        or "rate_limit_exceeded" in err_str
+        or "tokens per day" in err_str
+        or "quota" in err_str
+    )
+
+
+def llm_error_reply(session: dict, err: Exception) -> str:
+    """Build an honest, useful reply when an LLM call fails.
+
+    Always includes contact info. If a booking is in progress, mentions
+    it so the user knows their state isn't lost. State is NOT cleared
+    by this function — the caller should leave it alone too.
+    """
+    is_rate = is_rate_limit_error(err)
+    if is_rate:
+        opening = ("I'm temporarily at capacity and can't process that "
+                   "right now. Please try again in a few minutes, or "
+                   "reach our team directly at +971 50 729 7197 or "
+                   "info@nativacare.com.")
+    else:
+        opening = ("Something went wrong on my end. Please try again, "
+                   "or reach our team at +971 50 729 7197 or "
+                   "info@nativacare.com.")
+
+    lead = session.get("lead") or {}
+    candidate = session.get("candidate_service") or {}
+    in_progress = lead.get("service_name") or candidate.get("service_name")
+    if in_progress:
+        opening += (f"\n\nYour booking-in-progress for "
+                    f"{in_progress} is saved — come back any time "
+                    f"to continue.")
+    return opening
+
+
+# ---------------------------------------------------------------------------
+# Booking-flow templates (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+
+async def bookable_services() -> list:
+    """Return only services that have at least one active midwife mapped to
+    them in `midwife_services`. Prevents the bot from advertising services
+    nobody can actually book."""
+    services, links, midwives = await _gather(
+        get_services, get_midwife_services, get_midwives,
+    )
+    active_midwife_ids = {m["midwife_id"] for m in midwives if m.get("active", True)}
+    bookable_service_ids = {
+        link["service_id"] for link in links
+        if link.get("midwife_id") in active_midwife_ids
+    }
+    return [s for s in services if s["service_id"] in bookable_service_ids]
+
+
+async def render_service_menu() -> str:
+    services = await bookable_services()
+    if not services:
+        return ("I'm having trouble loading the service list. Please call us "
+                "at +971 50 729 7197.")
+    lines = ["Which service would you like to book?"]
+    # Group by category for readability
+    by_cat: dict = {}
+    for s in services:
+        by_cat.setdefault(s.get("category", "Other"), []).append(s)
+    for cat in by_cat:
+        lines.append(f"\n{cat}:")
+        for s in by_cat[cat][:8]:
+            lines.append(f"  • {s['service_name']}")
+    return "\n".join(lines)
+
+
+async def is_service_bookable(service_id: str) -> bool:
+    """Check whether at least one active midwife is mapped to this service."""
+    links, midwives = await _gather(get_midwife_services, get_midwives)
+    active_ids = {m["midwife_id"] for m in midwives if m.get("active", True)}
+    return any(
+        l.get("service_id") == service_id and l.get("midwife_id") in active_ids
+        for l in links
+    )
+
+
+# ---------------------------------------------------------------------------
+# Service-confirmation gate
+# ---------------------------------------------------------------------------
+# The architectural safety net: before we commit a service to lead.service_id,
+# the user must explicitly confirm it. Until then, the service lives in
+# session["candidate_service"] as {service_id, service_name}.
+#
+# This is the single most important guard against wrong-service bookings.
+# Every path that previously went straight to slot picking now routes
+# through STATE_CONFIRMING_SERVICE, which asks "is this right?"
+
+async def render_service_confirmation(service_id: str,
+                                      service_name: str) -> str:
+    """Build the 'is this the service you want?' prompt."""
+    services = await get_services()
+    svc = next((s for s in services if s["service_id"] == service_id), None)
+    if not svc:
+        return f"Just to confirm — you'd like to book {service_name}? Reply 'yes' to continue or tell me what you'd prefer instead."
+
+    price = svc.get("default_price_aed", "?")
+    duration = svc.get("duration_minutes", "?")
+    loc_type = svc.get("location_type", "")
+    loc_phrase = {
+        "clinic": "at the clinic",
+        "home": "as a home visit",
+        "online": "online",
+        "clinic_or_home": "at the clinic or as a home visit",
+        "clinic_or_online": "at the clinic or online",
+    }.get(loc_type, "")
+    parts = [f"Just to confirm — you'd like to book the **{service_name}**"]
+    detail_bits = []
+    if price != "?":
+        detail_bits.append(f"AED {price}")
+    if duration != "?":
+        detail_bits.append(f"{duration} min")
+    if loc_phrase:
+        detail_bits.append(loc_phrase)
+    if detail_bits:
+        parts.append(f"({', '.join(detail_bits)})")
+    parts.append("?")
+    return (
+        " ".join(parts)
+        + "\n\nReply 'yes' to continue, or tell me which service you'd prefer instead."
+    )
+
+
+async def enter_service_confirmation(session: dict, service_id: str,
+                                      service_name: str) -> str:
+    """Move the session into CONFIRMING_SERVICE state with the given
+    candidate. The service is NOT yet committed to lead — that happens
+    only after the user says yes."""
+    # Defensive: don't enter confirmation for an unbookable service.
+    if not await is_service_bookable(service_id):
+        return await render_unbookable_service_message(service_id, service_name)
+
+    session["candidate_service"] = {
+        "service_id": service_id,
+        "service_name": service_name,
+    }
+    session["state"] = STATE_CONFIRMING_SERVICE
+    _debug_event(f"Entered CONFIRMING_SERVICE for {service_name} ({service_id})")
+    return await render_service_confirmation(service_id, service_name)
+
+
+def commit_candidate_service(session: dict):
+    """Promote candidate_service into lead.service_id. Called after the
+    user confirms."""
+    candidate = session.get("candidate_service") or {}
+    if not candidate:
+        return False
+    lead = session.setdefault("lead", {})
+    lead["service_id"] = candidate["service_id"]
+    lead["service_name"] = candidate["service_name"]
+    # Clear slot-dependent fields that may have been set for a different
+    # service — the user is committing to THIS service now
+    lead.pop("midwife_id", None)
+    lead.pop("midwife_name", None)
+    lead.pop("appointment_date", None)
+    lead.pop("appointment_time", None)
+    lead.pop("duration_minutes", None)
+    lead.pop("price_aed", None)
+    lead.pop("location_type", None)
+    session.pop("candidate_service", None)
+    _debug_event(f"Committed candidate service: {candidate.get('service_name')}")
+    return True
+
+
+async def render_unbookable_service_message(service_id: str,
+                                            service_name: str) -> str:
+    """When the user has chosen a service that no midwife is currently
+    scheduled for, explain clearly and suggest related bookable services
+    in the same category. This is a real production scenario (a midwife
+    on leave, a service paused, etc.), so the wording should be honest
+    about scheduling rather than implying a system limitation."""
+    services = await get_services()
+    svc = next((s for s in services if s["service_id"] == service_id), None)
+    category = svc.get("category") if svc else None
+
+    suggestions = []
+    if category:
+        bookable = await bookable_services()
+        suggestions = [s["service_name"] for s in bookable
+                       if s.get("category") == category][:5]
+
+    msg = (f"I don't have a midwife scheduled for {service_name} right now. "
+           f"Please call us at +971 50 729 7197 or email info@nativacare.com "
+           f"and we'll arrange it for you.")
+    if suggestions:
+        msg += "\n\nIn the meantime, these similar services can be booked through chat:\n"
+        msg += "\n".join(f"  • {s}" for s in suggestions)
+    return msg
+
+
+async def render_next_available_days(service_id: str, num_days: int = 7,
+                                     service_name: str = "") -> str:
+    # Defensive check: is this service actually bookable at all?
+    if not await is_service_bookable(service_id):
+        return await render_unbookable_service_message(
+            service_id, service_name or service_id
+        )
+    days = await get_next_available_days(service_id, num_days=num_days)
+    if not days:
+        return ("I couldn't find any open slots in the next "
+                f"{num_days} days. Please call us at +971 50 729 7197 to "
+                "discuss options.")
+    lines = ["Which day works for you?"]
+    for d in days:
+        on_date = datetime.strptime(d.date, "%Y-%m-%d")
+        nice = on_date.strftime("%A, %B %d")
+        lines.append(f"  • {nice} ({len(d.slots)} slots available)")
+    lines.append("\nReply with a date (e.g. 'May 18' or 'Tuesday').")
+    return "\n".join(lines)
+
+
+async def render_slots_for_day(service_id: str, date_str: str) -> str:
+    day = await get_availability(service_id, date_str)
+    if not day.slots:
+        return (f"No slots available on {date_str}. Would you like to try "
+                "another day?")
+    return ("Here are the available times:\n\n"
+            + format_slots_human(day, max_lines=30)
+            + "\n\nReply with a time (e.g. '10:00' or '2pm').")
+
+
+# ---------------------------------------------------------------------------
+# Time-of-day filtering (Path B from the "evening slots" bug)
+# ---------------------------------------------------------------------------
+# Lets users ask "any evening slots?" / "morning preferred" / "afternoons
+# only" and get answers filtered by bucket rather than the bot ignoring
+# the preference. Buckets are:
+#   morning   06:00–11:59
+#   afternoon 12:00–16:59
+#   evening   17:00–21:59
+# Boundaries are documented choices, not based on anything formal.
+
+_TIME_OF_DAY_BUCKETS = {
+    "morning": (6, 12),     # [6:00, 12:00)
+    "afternoon": (12, 17),  # [12:00, 17:00)
+    "evening": (17, 22),    # [17:00, 22:00)
+}
+
+# Phrase → bucket name. Order doesn't matter since we check all.
+_TOD_PHRASES = {
+    "morning": "morning", "mornings": "morning", "before noon": "morning",
+    "early": "morning",
+    "afternoon": "afternoon", "afternoons": "afternoon", "midday": "afternoon",
+    "lunchtime": "afternoon",
+    "evening": "evening", "evenings": "evening", "after work": "evening",
+    "late": "evening", "night": "evening", "tonight": "evening",
+}
+
+
+def detect_time_of_day(message: str) -> Optional[str]:
+    """Return 'morning' / 'afternoon' / 'evening' if the message contains
+    a time-of-day reference, else None."""
+    if not message:
+        return None
+    lc = message.lower()
+    # Match longest phrases first to avoid 'late evening' triggering 'late' twice
+    for phrase, bucket in sorted(_TOD_PHRASES.items(), key=lambda x: -len(x[0])):
+        if phrase in lc:
+            return bucket
+    return None
+
+
+_OTHER_DAY_PATTERNS = [
+    "other day", "other days", "another day", "different day",
+    "any other day", "any other days", "different days",
+    "show me other", "show me another", "show me different",
+    "change the day", "change day", "what days", "which days",
+    "go back", "different date",
+]
+
+
+def wants_different_day(message: str) -> bool:
+    """User wants to step back from the slot list to the day list."""
+    if not message:
+        return False
+    lc = message.lower()
+    return any(p in lc for p in _OTHER_DAY_PATTERNS)
+
+
+def _slot_in_bucket(time_str: str, bucket: str) -> bool:
+    """Is HH:MM in the given bucket?"""
+    try:
+        hour = int(time_str.split(":")[0])
+    except (ValueError, IndexError):
+        return False
+    lo, hi = _TIME_OF_DAY_BUCKETS[bucket]
+    return lo <= hour < hi
+
+
+async def render_slots_for_day_filtered(service_id: str, date_str: str,
+                                        bucket: str) -> str:
+    """Show only slots in the requested time-of-day bucket. If the day
+    has no slots in that bucket, suggest other days that do."""
+    day = await get_availability(service_id, date_str)
+    if not day.slots:
+        return (f"No slots available on {date_str}. Would you like to try "
+                "another day?")
+
+    in_bucket = [s for s in day.slots if _slot_in_bucket(s.start_time, bucket)]
+
+    if in_bucket:
+        # Build a filtered DayAvailability-like view for format_slots_human.
+        # IMPORTANT: copy weekday from the source — it's a required field
+        # on the model. Forgetting it crashes the request handler.
+        from models import DayAvailability
+        filtered = DayAvailability(
+            date=day.date,
+            weekday=day.weekday,
+            slots=in_bucket,
+        )
+        return (f"Here are the {bucket} slots:\n\n"
+                + format_slots_human(filtered, max_lines=30)
+                + "\n\nReply with a time (e.g. '10:00' or '2pm'), or ask for "
+                  "another day if none of these work.")
+
+    # No matches on this day — look forward 7 days for the same bucket
+    days = await get_next_available_days(service_id, num_days=7)
+    bucket_days = []
+    for d in days:
+        if any(_slot_in_bucket(s.start_time, bucket) for s in d.slots):
+            bucket_days.append(d.date)
+
+    if not bucket_days:
+        return (f"No {bucket} slots are available in the next 7 days. "
+                f"{date_str} has {len(day.slots)} other slot(s) if you'd "
+                f"like to see them, or call us at +971 50 729 7197 to "
+                f"arrange something else.")
+
+    # Found some — name them
+    from datetime import datetime as _dt
+    pretty_days = []
+    for d in bucket_days[:5]:
+        try:
+            parsed = _dt.strptime(d, "%Y-%m-%d")
+            pretty_days.append(parsed.strftime("%A, %B %d").replace(" 0", " "))
+        except ValueError:
+            pretty_days.append(d)
+    return (f"No {bucket} slots on {date_str}. Days with {bucket} availability:\n"
+            + "\n".join(f"  • {p}" for p in pretty_days)
+            + "\n\nReply with one of these days.")
+
+
+async def render_nearest_slots(service_id: str, date_str: str,
+                               target_time: str, prefix: str = "") -> str:
+    """User asked for a time that isn't available. Find slots within a
+    reasonable window (90 min) on either side and offer them.
+
+    `prefix` is prepended to the reply (e.g. "12:00 isn't available — ").
+    """
+    day = await get_availability(service_id, date_str)
+    if not day.slots:
+        return prefix + f"No slots available on {date_str}."
+
+    try:
+        h, m = target_time.split(":")
+        target_minutes = int(h) * 60 + int(m)
+    except (ValueError, IndexError):
+        # Bad target — fall back to showing all
+        return prefix + ("Here are the available times:\n\n"
+                         + format_slots_human(day, max_lines=30)
+                         + "\n\nReply with a time.")
+
+    # Score each slot by absolute distance from target, in minutes
+    def minutes_of(t: str) -> int:
+        h2, m2 = t.split(":")
+        return int(h2) * 60 + int(m2)
+
+    scored = [(abs(minutes_of(s.start_time) - target_minutes), s)
+              for s in day.slots]
+    scored.sort(key=lambda x: x[0])
+
+    # Take up to 4 nearest within 90 minutes
+    near = [(dist, slot) for dist, slot in scored if dist <= 90][:4]
+    if not near:
+        # Nothing within 90 min — fall back to full list
+        return prefix + ("That's outside our hours that day. "
+                         + "Here are the available times:\n\n"
+                         + format_slots_human(day, max_lines=30)
+                         + "\n\nReply with a time.")
+
+    lines = [prefix + f"Closest available times to {target_time}:"]
+    for _, slot in near:
+        lines.append(f"  • {slot.start_time} with {slot.midwife_name}")
+    lines.append("\nReply with one of these times, or ask for a different day.")
+    return "\n".join(lines)
+
+
+# Fuzzy-time markers — "around 12", "near 2pm", "about noon", "roughly 3"
+_FUZZY_TIME_MARKERS = [
+    "around ", "near ", "about ", "roughly ", "approximately ",
+    "close to ", "or so", "ish", "preferably",
+]
+
+
+def is_fuzzy_time_request(message: str) -> bool:
+    if not message:
+        return False
+    lc = message.lower()
+    return any(m in lc for m in _FUZZY_TIME_MARKERS)
+
+
+async def render_days_filtered(service_id: str, bucket: str,
+                               service_name: str = "") -> str:
+    """When the user asked for a time-of-day before picking a day —
+    list the days that have slots in that bucket."""
+    days = await get_next_available_days(service_id, num_days=7)
+    bucket_days = []
+    for d in days:
+        matching = [s for s in d.slots if _slot_in_bucket(s.start_time, bucket)]
+        if matching:
+            bucket_days.append((d.date, len(matching)))
+
+    if not bucket_days:
+        sn = service_name or "this service"
+        return (f"No {bucket} slots are available for {sn} in the next 7 "
+                f"days. Please call us at +971 50 729 7197 to discuss "
+                f"alternatives, or reply with another time of day "
+                f"(morning / afternoon).")
+
+    from datetime import datetime as _dt
+    lines = [f"Days with {bucket} availability:"]
+    for d, n in bucket_days[:7]:
+        try:
+            parsed = _dt.strptime(d, "%Y-%m-%d")
+            pretty = parsed.strftime("%A, %B %d").replace(" 0", " ")
+        except ValueError:
+            pretty = d
+        lines.append(f"  • {pretty} ({n} slot{'s' if n != 1 else ''} available)")
+    lines.append("\nReply with a day.")
+    return "\n".join(lines)
+
+
+def render_address_prompt(service_name: str) -> str:
+    return (f"The {service_name} is a home visit. What's your address in "
+            "Abu Dhabi? (Building / area is enough; we'll confirm the rest.)")
+
+
+def render_location_choice(service_name: str) -> str:
+    return (f"The {service_name} can be at the clinic or as a home visit. "
+            "Which would you prefer? Reply 'clinic' or 'home'.")
+
+
+def render_next_detail_question(session: dict) -> Optional[str]:
+    """Determine the next required field and return its question, or None
+    if all required details are filled."""
+    lead = session.get("lead", {})
+    location_type = lead.get("location_type", "")
+
+    if not valid(lead.get("patient_name")):
+        session["awaiting_field"] = "patient_name"
+        return "May I have your full name?"
+    if not valid(lead.get("phone")):
+        session["awaiting_field"] = "phone"
+        return "Please share your UAE phone number."
+    if not session.get("email_asked"):
+        session["email_asked"] = True
+        session["awaiting_field"] = "email"
+        return ("Please share your email for confirmation, or type 'skip' "
+                "if you'd rather not.")
+    if (location_type == "home"
+            and not valid(lead.get("patient_address"))):
+        session["awaiting_field"] = "patient_address"
+        return ("What's the address for the home visit? Building / area in "
+                "Abu Dhabi is fine.")
+    session["awaiting_field"] = None
+    return None
+
+
+def ready_for_summary(session: dict) -> bool:
+    lead = session.get("lead", {})
+    required = ["service_id", "midwife_id", "appointment_date",
+                "appointment_time", "patient_name", "phone"]
+    if not all(valid(lead.get(k)) for k in required):
+        return False
+    if not session.get("email_asked"):
+        return False
+    if lead.get("location_type") == "home" and not valid(lead.get("patient_address")):
+        return False
+    return True
+
+
+def booking_summary(session: dict) -> str:
+    lead = session.get("lead", {})
+    on_date = lead.get("appointment_date", "")
+    try:
+        nice_date = datetime.strptime(on_date, "%Y-%m-%d").strftime("%A, %B %d, %Y")
+    except (ValueError, TypeError):
+        nice_date = on_date
+
+    email = lead.get("email") if valid(lead.get("email")) else "Not provided"
+    address = lead.get("patient_address") or "—"
+    price = lead.get("price_aed") or "—"
+
+    return (
+        "Please review your appointment details:\n\n"
+        f"• Service: {lead.get('service_name', '')}\n"
+        f"• Midwife: {lead.get('midwife_name', '')}\n"
+        f"• Date: {nice_date}\n"
+        f"• Time: {lead.get('appointment_time', '')} "
+        f"({lead.get('duration_minutes', 60)} min)\n"
+        f"• Location: {lead.get('location_type', '').replace('_', ' ')}\n"
+        f"• Address: {address}\n"
+        f"• Name: {lead.get('patient_name', '')}\n"
+        f"• Phone: {lead.get('phone', '')}\n"
+        f"• Email: {email}\n"
+        f"• Estimated price: AED {price}\n\n"
+        "Reply 'yes' to confirm, or tell me what to change "
+        "(e.g. 'change time to 11am')."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resolving a picked time into a real available slot
+# ---------------------------------------------------------------------------
+
+async def pick_slot_for_lead(session: dict, time_str: str) -> bool:
+    """Try to lock in the slot at `time_str` on the lead's current date.
+    Returns True if the slot was found and assigned; False otherwise.
+    Sets lead.midwife_id, midwife_name, appointment_time, duration_minutes,
+    location_type, price_aed."""
+    lead = session.get("lead", {})
+    service_id = lead.get("service_id")
+    date_str = lead.get("appointment_date")
+    if not service_id or not date_str:
+        return False
+    day = await get_availability(service_id, date_str)
+    slot = find_slot(day, time_str,
+                     preferred_midwife_name=lead.get("midwife_name"))
+    if not slot:
+        return False
+
+    lead["midwife_id"] = slot.midwife_id
+    lead["midwife_name"] = slot.midwife_name
+    lead["appointment_time"] = slot.start_time
+
+    # Look up service details for duration + price + location
+    services, links = await _gather(get_services, get_midwife_services)
+    svc = next((s for s in services if s["service_id"] == service_id), None)
+    if svc:
+        lead["duration_minutes"] = int(svc.get("duration_minutes") or 60)
+        loc_type = svc.get("location_type", "")
+        # If the service is single-location, FORCE location_type to match.
+        # The user can't get a "home" Hypnobirthing if it's clinic-only,
+        # even if a stale location_preference says otherwise.
+        if loc_type in ("home", "clinic", "online"):
+            lead["location_type"] = loc_type
+            # Clear stale preference that would conflict
+            if lead.get("location_preference") and lead["location_preference"] != loc_type:
+                lead["location_preference"] = loc_type
+        # Pricing: prefer the per-midwife override, else default
+        price = ""
+        for link in links:
+            if (link["midwife_id"] == slot.midwife_id
+                    and link["service_id"] == service_id
+                    and valid(link.get("price_override_aed"))):
+                price = link["price_override_aed"]
+                break
+        if not price:
+            price = svc.get("default_price_aed", "")
+        lead["price_aed"] = price
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Commit
+# ---------------------------------------------------------------------------
+
+async def commit_appointment(session: dict, source: str) -> str:
+    from calendar_service import create_appointment_event
+    from email_service import (send_patient_confirmation,
+                               send_clinic_notification)
+
+    lead_data = session.get("lead", {})
+    if str(lead_data.get("email", "")).lower() == "skip":
+        lead_data["email"] = ""
+
+    lead = AppointmentLead(
+        session_id=session.get("id", "unknown"),
+        patient_name=lead_data.get("patient_name", ""),
+        email=lead_data.get("email", ""),
+        phone=lead_data.get("phone", ""),
+        service_id=lead_data.get("service_id", ""),
+        service_name=lead_data.get("service_name", ""),
+        midwife_id=lead_data.get("midwife_id", ""),
+        midwife_name=lead_data.get("midwife_name", ""),
+        location_type=lead_data.get("location_type", ""),
+        patient_address=lead_data.get("patient_address", ""),
+        appointment_date=lead_data.get("appointment_date", ""),
+        appointment_time=lead_data.get("appointment_time", ""),
+        duration_minutes=int(lead_data.get("duration_minutes") or 60),
+        price_aed=str(lead_data.get("price_aed") or ""),
+        package_id=lead_data.get("package_id", ""),
+        language="en",
+        source=source,
+        status="confirmed",
+    )
+    save_appointment(lead)
+
+    session["last_booking"] = dict(lead_data)
+    session.setdefault("past_bookings", []).append(dict(lead_data))
+    session["state"] = STATE_BOOKED
+    session["lead"] = {}
+    session["awaiting_field"] = None
+    session["email_asked"] = False
+
+    lead_dict = lead.model_dump()
+    cal_status = create_appointment_event(lead_dict)
+    patient_email_status = await send_patient_confirmation(lead_dict)
+    clinic_email_status = await send_clinic_notification(lead_dict)
+
+    session["appointment_status"] = {
+        "calendar": cal_status,
+        "patient_email": patient_email_status,
+        "clinic_email": clinic_email_status,
+    }
+
+    last = session["last_booking"]
+    try:
+        nice_date = datetime.strptime(
+            last["appointment_date"], "%Y-%m-%d"
+        ).strftime("%A, %B %d")
+    except (KeyError, ValueError):
+        nice_date = last.get("appointment_date", "")
+
+    return (
+        f"Your {last.get('service_name', 'appointment')} is confirmed for "
+        f"{nice_date} at {last.get('appointment_time', '')} with "
+        f"{last.get('midwife_name', '')}. We'll be in touch with any "
+        "further details. Thank you for choosing us."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response payload
+# ---------------------------------------------------------------------------
+
+def response_payload(reply: str, session: dict,
+                     booking_made: bool = False) -> dict:
+    lead = session.get("lead") or session.get("last_booking") or {}
+    is_booked = session.get("state") == STATE_BOOKED or booking_made
+
+    # Capture debug snapshot before returning. Includes which session this
+    # was, what state we ended in, and everything _DEBUG_BUFFER collected
+    # during this turn.
+    debug = _debug_snapshot()
+    debug["session_id"] = session.get("id")
+    debug["state_after"] = session.get("state")
+    debug["lead"] = dict(lead)
+
+    return {
+        "reply": reply,
+        "language": "en",
+        "lead_captured": is_booked,
+        "booking_made": is_booked,
+        "state": session.get("state"),
+        "service_name": lead.get("service_name"),
+        "midwife_name": lead.get("midwife_name"),
+        "appointment_date": lead.get("appointment_date"),
+        "appointment_time": lead.get("appointment_time"),
+        "patient_name": lead.get("patient_name"),
+        "phone": lead.get("phone"),
+        "email": lead.get("email"),
+        "patient_address": lead.get("patient_address"),
+        "location_type": lead.get("location_type"),
+        "price_aed": lead.get("price_aed"),
+        "appointment_status": session.get("appointment_status", {}),
+        "debug": debug,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main router
+# ---------------------------------------------------------------------------
+
+async def get_ai_response(session_id: str, user_message: str,
+                          source: str = "website") -> dict:
+    _debug_reset()
+    cleanup_old_sessions()
+
+    if not session_id:
+        session_id = f"demo_{int(_time.time())}_{md5(user_message.encode()).hexdigest()[:8]}"
+
+    if session_id not in _sessions:
+        # Check demo-mode for the greeting prefix
+        clinic = await get_clinic_info()
+        demo_mode = clinic.get("demo_mode", "").upper() == "TRUE"
+        _sessions[session_id] = {
+            "id": session_id,
+            "history": [],
+            "lead": {},
+            "last_booking": None,
+            "past_bookings": [],
+            "state": STATE_BROWSING,
+            "awaiting_field": None,
+            "email_asked": False,
+            "demo_mode": demo_mode,
+            "last_seen": datetime.utcnow(),
+        }
+
+    session = _sessions[session_id]
+    session["last_seen"] = datetime.utcnow()
+    set_session_cache(session)
+    state = session["state"]
+    _DEBUG_BUFFER["state_before"] = state
+    _DEBUG_BUFFER["user_message"] = user_message
+
+    # Quick emergency short-circuit before any LLM call
+    if is_emergency(user_message):
+        _debug_event("Emergency keyword detected — short-circuit")
+        reply = emergency_reply()
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # Human-handoff short-circuit: user wants to talk to a person, not
+    # the bot. Give them contact info immediately, preserve any
+    # booking-in-progress so they can come back.
+    if wants_human_handoff(user_message):
+        _debug_event("Human handoff requested — short-circuit with contact info")
+        reply = handoff_reply(session)
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # --- LLM Call 1: Understand ---
+    understanding = await understand(session, user_message)
+    intent = understanding["intent"]
+    new_slots = understanding["slots"]
+    _DEBUG_BUFFER["intent"] = intent
+    _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
+    _DEBUG_BUFFER["corrections"] = list(understanding.get("corrections", []))
+
+    if intent == "emergency":
+        # Apply the same non-emergency guard the keyword detector uses.
+        # LLM tends to escalate broadly in healthcare contexts — that's
+        # safer by default, but produces false positives on phrases like
+        # "about to give birth soon" where the user is planning, not in
+        # active emergency.
+        msg_lc = " " + (user_message or "").lower() + " "
+        if any(marker in msg_lc for marker in _NON_EMERGENCY_MARKERS):
+            _debug_event("LLM said emergency but message contains non-emergency markers — downgraded to general")
+            intent = "general"
+            understanding["intent"] = "general"
+            _DEBUG_BUFFER["intent"] = "general"
+        else:
+            reply = emergency_reply()
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+    # Apply non-conflicting slots into the active lead.
+    #
+    # Service-confirmation rule (architectural safeguard):
+    #   service_id / service_name slots NEVER go directly into lead.
+    #   They go into session["candidate_service"] instead, and are only
+    #   promoted to lead.service_id after the user confirms in
+    #   STATE_CONFIRMING_SERVICE. This prevents wrong-service bookings
+    #   caused by LLM mis-extraction or stale conversation context.
+    lead = session.setdefault("lead", {})
+    msg_lower = user_message.lower()
+
+    # Stage the proposed service as a candidate. If we already have an
+    # active service in the lead (e.g. user is mid-booking), only stage a
+    # NEW service when it's clearly grounded in the user's words.
+    proposed_svc_id = new_slots.get("service_id")
+    proposed_svc_name = new_slots.get("service_name")
+    if proposed_svc_id and proposed_svc_name:
+        cur_lead_svc = lead.get("service_id")
+        cur_candidate = (session.get("candidate_service") or {}).get("service_id")
+        # Only treat it as new if it differs from BOTH the current lead and
+        # any existing candidate
+        if proposed_svc_id != cur_lead_svc and proposed_svc_id != cur_candidate:
+            skip = {"and", "or", "the", "a", "an", "for", "of", "my",
+                    "with", "to", "in", "on"}
+            words = [w.lower() for w in re.findall(r"[A-Za-z]+", proposed_svc_name)
+                     if len(w) > 2 and w.lower() not in skip]
+            grounded = any(w in msg_lower for w in words)
+            if grounded or not cur_lead_svc:
+                # Set as candidate, NOT as the committed service
+                session["candidate_service"] = {
+                    "service_id": proposed_svc_id,
+                    "service_name": proposed_svc_name,
+                }
+                _debug_event(
+                    f"Staged candidate service: {proposed_svc_name} "
+                    f"(grounded={grounded})"
+                )
+            else:
+                _debug_event(
+                    f"Rejected service proposal {proposed_svc_name} "
+                    f"(not grounded in user message and active service exists)"
+                )
+
+    # Apply the OTHER slots normally. Skip service_id/service_name since
+    # those are handled above via candidate_service.
+    for key, value in new_slots.items():
+        if not value:
+            continue
+        if key in ("service_id", "service_name"):
+            continue  # handled above
+
+        # Only set if not already set, or if it's an answer-style update
+        if not valid(lead.get(key)):
+            lead[key] = value
+        elif intent in ("correction", "answer", "pick_slot") and lead.get(key) != value:
+            lead[key] = value
+
+    # =====================================================================
+    # State: CONFIRMING_SERVICE — bot asked "is this the right service?"
+    # =====================================================================
+    if state == STATE_CONFIRMING_SERVICE:
+        # ----- Package reference: redirect to phone -----
+        # The user named a package (or used a package phrasing) instead
+        # of confirming the current candidate. Packages aren't bookable
+        # through chat, so we redirect honestly.
+        pkg_name = await references_package(user_message)
+        if pkg_name:
+            _debug_event(f"Package reference in CONFIRMING_SERVICE: {pkg_name}")
+            cand = session.get("candidate_service") or {}
+            cur_svc = cand.get("service_name", "your selected service")
+            label = pkg_name if pkg_name != "package" else "packages"
+            reply = (f"{label.capitalize()} need to be arranged by phone — "
+                     f"call us at +971 50 729 7197 or email "
+                     f"info@nativacare.com.\n\n"
+                     f"Should I keep your booking for the **{cur_svc}**? "
+                     f"Reply 'yes' to continue with that, or 'cancel' to "
+                     f"start fresh.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # ----- Deny + alternative: cancel candidate, ask what they want -----
+        # "No, [something else]" should NOT silently re-show the current
+        # confirmation. If we have a clear new candidate from the LLM,
+        # the re-confirm branch below handles it. Otherwise, acknowledge
+        # the no and ask what they want instead.
+        if looks_like_deny_with_alternative(user_message) and not new_slots.get("service_id"):
+            _debug_event("Deny-with-alternative in CONFIRMING_SERVICE (no new candidate extracted)")
+            session.pop("candidate_service", None)
+            session["state"] = STATE_SERVICE_SELECTING
+            reply = ("OK — which service would you like instead? "
+                     "You can reply with the service name, or 'list' to "
+                     "see all options.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session.pop("candidate_service", None)
+            session["lead"] = {}
+            reply = "Cancelled. Let me know if you'd like to start over."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # User confirmed — commit the candidate service to the lead and
+        # advance to slot picking.
+        if intent == "confirm":
+            committed = commit_candidate_service(session)
+            if not committed:
+                # No candidate — something went wrong; restart selection
+                session["state"] = STATE_SERVICE_SELECTING
+                reply = await render_service_menu()
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+            session["state"] = STATE_SLOT_PICKING
+            reply = await render_next_available_days(
+                lead["service_id"],
+                service_name=lead.get("service_name", ""),
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # User named a different service this turn — stage the new
+        # candidate and re-confirm. (We detect "new this turn" via the
+        # presence of service_id in new_slots from the LLM.)
+        if new_slots.get("service_id"):
+            cand = session.get("candidate_service") or {}
+            if cand.get("service_id"):
+                reply = await render_service_confirmation(
+                    cand["service_id"],
+                    cand.get("service_name", ""),
+                )
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+        # Side question (info, price, etc.) — answer it, stay in
+        # CONFIRMING_SERVICE so the user can still say yes/no after.
+        # We include "book" here too because the LLM sometimes
+        # misclassifies info questions about the active service as "book"
+        # (the CRITICAL rule in the understand prompt over-triggers on
+        # words like "days"/"time"). If intent is "book" but NO new
+        # service was named, treat as a side question rather than
+        # re-showing the confirmation.
+        info_intents = ("price_question", "service_list", "midwife_list",
+                        "midwife_question", "package_question",
+                        "availability_question", "faq", "general", "book")
+        if intent in info_intents:
+            reply = await compose_reply(session, user_message, understanding)
+            # Append a gentle reminder of the pending confirmation
+            cand = session.get("candidate_service") or {}
+            if cand:
+                reply += (f"\n\n(Still ready to book {cand.get('service_name')} "
+                          "when you are — reply 'yes' to continue.)")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Anything else — re-show the confirmation
+        cand = session.get("candidate_service") or {}
+        if cand:
+            reply = await render_service_confirmation(
+                cand["service_id"], cand.get("service_name", "")
+            )
+        else:
+            # No candidate? Fall back to the menu
+            session["state"] = STATE_SERVICE_SELECTING
+            reply = await render_service_menu()
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: AWAITING_CONFIRM
+    # =====================================================================
+    if state == STATE_AWAITING_CONFIRM:
+        if intent == "confirm":
+            reply = await commit_appointment(session, source)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session, booking_made=True)
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            session["email_asked"] = False
+            reply = "Cancelled. Let me know if you'd like to start over."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Service-correction path: user wants to switch from one service
+        # to another while at the summary. Two flavors:
+        #
+        # (a) They named a specific NEW service — swap it in and re-route
+        #     to slot picking (date/time/midwife depend on the service).
+        #     Keep patient name/phone/email so they don't re-enter them.
+        #
+        # (b) They said something vague like "change the deal" / "want
+        #     the package" — we can't auto-resolve. Acknowledge honestly
+        #     and offer to either keep this booking or cancel & call for
+        #     a package.
+
+        # (a) Did the LLM extract a new service that differs from the lead?
+        new_svc_id = new_slots.get("service_id")
+        cur_svc_id = lead.get("service_id")
+        if new_svc_id and new_svc_id != cur_svc_id:
+            _debug_event(f"Service correction in AWAITING_CONFIRM: {cur_svc_id} -> {new_svc_id}")
+            # Verify the new service is bookable before switching
+            if await is_service_bookable(new_svc_id):
+                # Clear the old booking's lead data (the user is changing
+                # service, so date/time/midwife/etc. no longer apply)
+                preserved = {
+                    k: lead.get(k) for k in ("patient_name", "phone", "email")
+                    if lead.get(k)
+                }
+                session["lead"] = preserved
+                # Route through the confirmation gate
+                reply = await enter_service_confirmation(
+                    session, new_svc_id,
+                    new_slots.get("service_name") or new_svc_id,
+                )
+            else:
+                reply = (f"I'd need to handle {new_slots.get('service_name', 'that service')} "
+                         f"by phone — call us at +971 50 729 7197. "
+                         f"Should I keep your current {lead.get('service_name', 'booking')} "
+                         f"booking, or cancel it? Reply 'yes' to confirm the "
+                         f"current booking, or 'cancel' to start fresh.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # (b) Vague change-references and package references.
+        # Use the shared helper so both real package names ("Newborn
+        # Starter") and vague phrasings ("the bundle") are caught.
+        pkg_name = await references_package(user_message)
+        if pkg_name:
+            _debug_event(f"Package reference in AWAITING_CONFIRM: {pkg_name}")
+            label = pkg_name if pkg_name != "package" else "Packages"
+            reply = (f"{label} need to be arranged by phone — "
+                     f"call us at +971 50 729 7197 or "
+                     f"email info@nativacare.com.\n\n"
+                     f"Should I keep your current {lead.get('service_name', 'booking')} "
+                     f"booking for {lead.get('appointment_date', '')} at "
+                     f"{lead.get('appointment_time', '')}? Reply 'yes' to "
+                     "confirm it as-is, or 'cancel' to start fresh.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Any other input — re-show summary
+        reply = booking_summary(session)
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: SLOT_PICKING — user is choosing a time from a list
+    # =====================================================================
+    if state == STATE_SLOT_PICKING:
+        # Cancellation
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            reply = "Booking cancelled. Let me know if there's anything else."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # User wants to see a different day — clear the current date and
+        # re-render the day list. Detects "other day", "another day",
+        # "different day", "what days", etc.
+        if wants_different_day(user_message) and lead.get("appointment_date"):
+            _debug_event("User wants different day — clearing date and re-rendering day list")
+            lead.pop("appointment_date", None)
+            lead.pop("appointment_time", None)
+            reply = await render_next_available_days(
+                lead["service_id"],
+                service_name=lead.get("service_name", ""),
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Time-of-day preference: user said "evening" / "morning" / "afternoon"
+        # / "any other day with evening slots" / similar. Filter the slot
+        # display by that bucket, OR if no date is set yet, list days that
+        # have slots in that bucket.
+        tod = detect_time_of_day(user_message)
+        if tod and lead.get("service_id"):
+            _debug_event(f"Time-of-day filter requested: {tod}")
+            if lead.get("appointment_date"):
+                # User has a day picked but wants only certain hours
+                reply = await render_slots_for_day_filtered(
+                    lead["service_id"], lead["appointment_date"], tod
+                )
+            else:
+                # No day picked yet — show days that have slots in this bucket
+                reply = await render_days_filtered(
+                    lead["service_id"], tod,
+                    service_name=lead.get("service_name", ""),
+                )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Side question mid-booking: answer it, do NOT re-show the day list.
+        # The user can pick a date/time on a later turn when they're ready.
+        if intent in ("price_question", "service_list", "midwife_list",
+                      "midwife_question", "package_question",
+                      "availability_question", "faq", "general"):
+            reply = await compose_reply(session, user_message, understanding)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # If the user gave a date but no time, show slots for that date
+        if lead.get("appointment_date") and not lead.get("appointment_time"):
+            reply = await render_slots_for_day(
+                lead["service_id"], lead["appointment_date"]
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # If we have both date + time, try to lock in the slot
+        if lead.get("appointment_date") and lead.get("appointment_time"):
+            requested_time = lead["appointment_time"]
+            ok = await pick_slot_for_lead(session, requested_time)
+            if not ok:
+                lead.pop("appointment_time", None)
+                # If the user said "around X" / "near X" / "about X", or
+                # in general the time isn't an exact match, suggest the
+                # nearest available slots instead of re-dumping the full
+                # list. Much more useful for fuzzy time asks.
+                reply = await render_nearest_slots(
+                    lead["service_id"],
+                    lead["appointment_date"],
+                    requested_time,
+                    prefix=f"{requested_time} isn't available. ",
+                )
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+            # Slot locked — figure out next step: location choice or details
+            service = next(
+                (s for s in await get_services()
+                 if s["service_id"] == lead["service_id"]),
+                None,
+            )
+            if service:
+                loc_type = service.get("location_type", "")
+                if loc_type in ("clinic_or_home", "clinic_or_online"):
+                    if not lead.get("location_type"):
+                        session["state"] = STATE_COLLECTING_DETAILS
+                        reply = render_location_choice(lead.get("service_name", "service"))
+                        append_history(session, user_message, reply)
+                        save_chat_log(session_id, user_message, reply)
+                        return response_payload(reply, session)
+
+            session["state"] = STATE_COLLECTING_DETAILS
+            q = render_next_detail_question(session)
+            reply = q or "Almost done — anything to add?"
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # No date yet — show day list
+        reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: COLLECTING_DETAILS
+    # =====================================================================
+    if state == STATE_COLLECTING_DETAILS:
+        # Side question → answer it but don't re-prompt
+        if intent in ("price_question", "service_list", "midwife_list",
+                      "midwife_question", "package_question",
+                      "availability_question", "faq", "general"):
+            reply = await compose_reply(session, user_message, understanding)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            session["email_asked"] = False
+            reply = "Booking cancelled. Let me know if there's anything else."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Handle "skip" for email
+        if (session.get("awaiting_field") == "email"
+                and user_message.lower().strip() in ("skip", "no", "no email")):
+            lead["email"] = "skip"
+
+        # Handle bare-text answers (name, address)
+        awaiting = session.get("awaiting_field")
+        if awaiting == "patient_name" and not valid(lead.get("patient_name")):
+            text = user_message.strip()
+            if 2 <= len(text) <= 50 and not text.isdigit() and "@" not in text:
+                lead["patient_name"] = text
+        elif awaiting == "patient_address" and not valid(lead.get("patient_address")):
+            text = user_message.strip()
+            if 5 <= len(text) <= 200:
+                lead["patient_address"] = text
+        elif awaiting == "phone" and not valid(lead.get("phone")):
+            digits = re.sub(r"\D", "", user_message)
+            if len(digits) >= 7:
+                lead["phone"] = user_message.strip()
+
+        # Handle location choice. If the user explicitly says "clinic"
+        # (or similar) while in home-visit flow, switch — useful when
+        # we've rejected their address as out-of-area.
+        msg_low = user_message.lower()
+        if (not lead.get("location_type")):
+            if "home" in msg_low or "visit" in msg_low or "address" in msg_low:
+                lead["location_type"] = "home"
+            elif "clinic" in msg_low or "in person" in msg_low:
+                lead["location_type"] = "clinic"
+            elif "online" in msg_low or "virtual" in msg_low or "video" in msg_low:
+                lead["location_type"] = "online"
+        elif (lead.get("location_type") == "home"
+              and (msg_low.strip() == "clinic" or "in person" in msg_low
+                   or "switch to clinic" in msg_low or "the clinic" in msg_low)):
+            # User wants to switch from home to clinic
+            _debug_event("User switched home → clinic mid-flow")
+            lead["location_type"] = "clinic"
+            lead["patient_address"] = ""
+            session.pop("address_rejection_count", None)
+
+        # Out-of-area address: REJECT and re-prompt instead of accepting.
+        # If the address doesn't contain any Abu Dhabi keyword, clear it
+        # and ask again. After 2 rejections, escalate to phone.
+        addr = lead.get("patient_address") or ""
+        if (lead.get("location_type") == "home" and addr
+                and not any(k in addr.lower() for k in ABU_DHABI_KEYWORDS)):
+            rejection_count = session.get("address_rejection_count", 0) + 1
+            session["address_rejection_count"] = rejection_count
+            # Clear the rejected address so we re-collect it
+            lead["patient_address"] = ""
+            session["awaiting_field"] = "patient_address"
+
+            if rejection_count >= 2:
+                # User has tried twice. Stop blocking and escalate to phone.
+                session["state"] = STATE_BROWSING
+                session["lead"] = {}
+                session.pop("address_rejection_count", None)
+                reply = (f"Home visits are currently Abu Dhabi only, and "
+                         f"\"{addr}\" doesn't look like an Abu Dhabi address. "
+                         f"Please call us at +971 50 729 7197 to discuss "
+                         f"options. I'm happy to help with anything else.")
+            else:
+                reply = (f"Our home visits are Abu Dhabi only, and \"{addr}\" "
+                         f"doesn't look like an Abu Dhabi address. Could you "
+                         f"give an Abu Dhabi address (building or area name)? "
+                         f"Or reply 'clinic' to switch to a clinic visit.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Successful address (in Abu Dhabi) — clear rejection count
+        if lead.get("patient_address"):
+            session.pop("address_rejection_count", None)
+
+        # Check if ready for summary
+        if ready_for_summary(session):
+            session["state"] = STATE_AWAITING_CONFIRM
+            reply = booking_summary(session)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        q = render_next_detail_question(session)
+        reply = q or booking_summary(session)
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: SERVICE_SELECTING
+    # =====================================================================
+    if state == STATE_SERVICE_SELECTING:
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            reply = "No problem. Let me know if there's anything else."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Package check — same as in BROWSING/book. The user often lands
+        # in SERVICE_SELECTING from a prior "book" attempt, then types a
+        # package name. We need to detect and redirect to phone before
+        # falling through to the menu.
+        #
+        # Three ways to detect:
+        #  (a) lead has a package_id set (LLM extracted it earlier)
+        #  (b) user's current message names a package
+        #  (c) user said "book it" / pronoun-book after a package was just discussed
+        pkg_name = None
+        if lead.get("package_name"):
+            pkg_name = lead["package_name"]
+        elif lead.get("package_id"):
+            pkg_name = lead["package_id"]  # better than nothing
+        if not pkg_name:
+            pkg_name = await references_package(user_message)
+        if not pkg_name:
+            recent_packages = session.get("last_mentioned_packages") or []
+            if (recent_packages
+                    and references_recent_recommendations(user_message)):
+                pkg_name = recent_packages[0]
+                _debug_event(f"Pronoun-book after package discussion in SERVICE_SELECTING: {pkg_name}")
+
+        if pkg_name:
+            _debug_event(f"Package reference in SERVICE_SELECTING: {pkg_name}")
+            label = pkg_name if pkg_name != "package" else "Packages"
+            reply = (f"{label} need to be arranged by phone — call us at "
+                     f"+971 50 729 7197 or email info@nativacare.com. "
+                     f"Would you like to book a single service through chat "
+                     f"instead? Reply with the service name (e.g. 'book "
+                     f"Hypnobirthing').")
+            # Clear package fields and last_mentioned so future turns don't
+            # keep re-triggering this redirect
+            lead.pop("package_id", None)
+            lead.pop("package_name", None)
+            session.pop("last_mentioned_packages", None)
+            session["state"] = STATE_BROWSING
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Side question mid-flow: answer it without re-showing the menu.
+        # We check this BEFORE the service-id branch so that even if the
+        # LLM also picked up a service in the slots (e.g. user said
+        # "tell me about hypnobirthing" — service extracted AND it's a
+        # question), the side-question wins.
+        info_intents = ("price_question", "service_list", "midwife_list",
+                        "midwife_question", "package_question",
+                        "availability_question", "faq", "general")
+        if intent in info_intents:
+            reply = await compose_reply(session, user_message, understanding)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        if lead.get("service_id"):
+            # Already-committed service (shouldn't usually happen — service
+            # commits go through CONFIRMING_SERVICE — but kept as a safety net)
+            session["state"] = STATE_SLOT_PICKING
+            reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Did the slot-applier stage a candidate service from this message?
+        # If so, route through the confirmation gate.
+        cand = session.get("candidate_service") or {}
+        if cand.get("service_id"):
+            reply = await enter_service_confirmation(
+                session, cand["service_id"], cand.get("service_name", "")
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Category word like "wellbeing" / "workshops" — list services in
+        # that category instead of re-showing the full menu. Mirrors the
+        # check in the BROWSING/book handler.
+        category_word = _detect_category_word(user_message)
+        if category_word and not await _service_explicit_in_message(user_message):
+            in_category = await _services_in_category(category_word)
+            if in_category:
+                _debug_event(f"Category '{category_word}' in SERVICE_SELECTING — listing {len(in_category)} services")
+                lines = [f"Our {category_word.title()} services:"]
+                for s in in_category:
+                    lines.append(f"  • {s['service_name']}")
+                lines.append("\nWhich would you like to book?")
+                reply = "\n".join(lines)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+        # No service id extracted AND not a side question — re-show the menu.
+        reply = await render_service_menu()
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: BROWSING or BOOKED — general conversation
+    # =====================================================================
+
+    # Promote ambiguous "yes" / "ok" / "sure" replies into book intent
+    # when the bot's previous turn offered to book or show slots. The
+    # compose LLM frequently says things like "would you like to book?"
+    # or "I can show you available slots" — without this promotion, the
+    # user's "yes" falls through to compose again and we get a vague
+    # reprompt loop.
+    if intent == "confirm" and state in (STATE_BROWSING, STATE_BOOKED):
+        last_assistant = ""
+        for msg in reversed(session.get("history", [])):
+            if msg.get("role") == "assistant":
+                last_assistant = msg.get("content", "").lower()
+                break
+        # If the bot offered to book / show slots / proceed, treat "yes"
+        # as a book intent. The book branch will then route to either
+        # slot picking (if a service is set) or the service menu.
+        booking_offers = [
+            "would you like to book", "want to book", "shall i book",
+            "show you available slots", "show you the available",
+            "show you times", "show you the times", "show you slots",
+            "ready to book", "proceed with booking",
+            "would you like me to book", "would you like me to show",
+        ]
+        if any(p in last_assistant for p in booking_offers):
+            _debug_event("Confirm in BROWSING promoted to book (prior turn offered booking)")
+            intent = "book"
+            _DEBUG_BUFFER["intent"] = intent
+        else:
+            # No clear booking offer — fall through to compose for a normal reply
+            pass
+
+    if intent == "book":
+        # Multi-booking guard: detect "book all three", "two appointments",
+        # "multiple sessions", etc. We don't support multi-booking in v1,
+        # so reply with a graceful explanation and offer to start with one.
+        msg_lc = (user_message or "").lower()
+        multi_signals = [
+            "all three", "all 3", "all of them", "both of them",
+            "multiple appointments", "multiple sessions", "several sessions",
+            "two appointments", "three appointments", "2 appointments",
+            "3 appointments", "book three", "book two", "book multiple",
+            "book several", "book a few", "book all",
+        ]
+        if any(s in msg_lc for s in multi_signals):
+            _debug_event("Multi-booking request detected — offered to start with one")
+            reply = ("I can help you book — though I'll need to take one "
+                     "appointment at a time. Which would you like to start "
+                     "with? If you tell me the first service, we'll get "
+                     "that locked in, and then we can come back for the "
+                     "next one.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Package check: detect when the user is trying to book a package
+        # (which isn't bookable through chat) and redirect to phone. Same
+        # check used in CONFIRMING_SERVICE and AWAITING_CONFIRM. Must run
+        # BEFORE the category guard because some package names contain
+        # category words (e.g. "Newborn Starter" contains "newborn").
+        pkg_name = await references_package(user_message)
+
+        # If the user didn't name a package directly, check whether a
+        # package was discussed in the previous turn AND the user used a
+        # pronoun-book pattern ("ok book it", "book it"). That counts as
+        # a package-booking attempt too.
+        if not pkg_name:
+            recent_packages = session.get("last_mentioned_packages") or []
+            if (recent_packages
+                    and references_recent_recommendations(user_message)):
+                # Use the most recently mentioned package
+                pkg_name = recent_packages[0]
+                _debug_event(f"Pronoun-book after package discussion: {pkg_name}")
+
+        if pkg_name:
+            _debug_event(f"Package reference in BROWSING/book: {pkg_name}")
+            label = pkg_name if pkg_name != "package" else "Packages"
+            reply = (f"{label} need to be arranged by phone — call us at "
+                     f"+971 50 729 7197 or email info@nativacare.com. "
+                     f"Would you like to book a single service through chat "
+                     f"instead? Reply with the service name (e.g. 'book "
+                     f"Hypnobirthing').")
+            # Clear so a later message isn't matched against stale data
+            session.pop("last_mentioned_packages", None)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Category-word guard: if the user typed a CATEGORY ("workshop",
+        # "wellbeing", "postnatal services") rather than a specific service
+        # name, list services in that category and ask which one. This
+        # prevents the LLM from silently picking a single service from a
+        # category mention (which was causing wrong-service bookings).
+        category_word = _detect_category_word(user_message)
+        # Apply only when the user clearly typed a category AND we don't
+        # already have a service the user previously confirmed.
+        if category_word and not await _service_explicit_in_message(user_message):
+            in_category = await _services_in_category(category_word)
+            if in_category:
+                _debug_event(f"Category word '{category_word}' detected — listing {len(in_category)} services")
+                # Clear any speculative service the LLM auto-picked this turn
+                if lead.get("service_id") and not session.get("service_confirmed"):
+                    lead.pop("service_id", None)
+                    lead.pop("service_name", None)
+                session["state"] = STATE_SERVICE_SELECTING
+                lines = [f"Our {category_word.title()} services:"]
+                for s in in_category:
+                    lines.append(f"  • {s['service_name']}")
+                lines.append("\nWhich would you like to book?")
+                reply = "\n".join(lines)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+        # New booking
+        if state == STATE_BOOKED:
+            preserved_slots = {
+                k: v for k, v in lead.items()
+                if k in ("service_id", "service_name", "midwife_id",
+                         "midwife_name", "package_id")
+            }
+            session["lead"] = preserved_slots
+            session["email_asked"] = False
+
+        if lead.get("service_id"):
+            # Existing committed service (e.g. coming back from BOOKED with
+            # preserved fields) — go straight to slot picking.
+            session["state"] = STATE_SLOT_PICKING
+            reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Did the slot-applier stage a candidate service this turn?
+        # ("book Hypnobirthing" extracts service_name into candidate)
+        cand = session.get("candidate_service") or {}
+        if cand.get("service_id"):
+            reply = await enter_service_confirmation(
+                session, cand["service_id"], cand.get("service_name", "")
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # No specific service in the lead. Before falling back to the full
+        # menu, check whether the user is referring to services the bot
+        # just recommended ("book these classes", "book them", etc.).
+        recommended = session.get("last_recommended") or []
+        if recommended and references_recent_recommendations(user_message):
+            _debug_event(f"User referenced last_recommended ({len(recommended)} items)")
+            if len(recommended) == 1:
+                # One candidate — route through confirmation gate
+                reply = await enter_service_confirmation(
+                    session,
+                    recommended[0]["service_id"],
+                    recommended[0]["service_name"],
+                )
+            else:
+                # Multiple — ask which one
+                session["state"] = STATE_SERVICE_SELECTING
+                names = [r["service_name"] for r in recommended]
+                if len(names) == 2:
+                    name_list = f"{names[0]} or {names[1]}"
+                else:
+                    name_list = ", ".join(names[:-1]) + f", or {names[-1]}"
+                reply = (f"Sure — which would you like to start with: "
+                         f"{name_list}?")
+            # Once we've used the recommendations, clear them so a later
+            # message isn't matched against stale recommendations.
+            session.pop("last_recommended", None)
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # No service id and no candidate recommendations — full menu.
+        session["state"] = STATE_SERVICE_SELECTING
+        reply = await render_service_menu()
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    if intent == "greeting":
+        clinic = await get_clinic_info()
+        prefix = ""
+        if clinic.get("demo_mode", "").upper() == "TRUE":
+            prefix = ("[Note: this is a demo deployment with placeholder "
+                      "data — please verify any details with the clinic.]\n\n")
+        reply = (prefix + f"Hello! Welcome to {CLINIC_NAME}. "
+                 "I can help with our services, pricing, midwives, packages, "
+                 "or booking an appointment. What can I help with today?")
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    if intent == "thanks":
+        reply = "You're welcome. Take care."
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # All other intents → LLM compose
+    reply = await compose_reply(session, user_message, understanding)
+    append_history(session, user_message, reply)
+    save_chat_log(session_id, user_message, reply)
+    return response_payload(reply, session)
