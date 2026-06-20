@@ -25,6 +25,29 @@ CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
 CLINIC_NAME = os.getenv("CLINIC_NAME", "NativaCare")
 DEFAULT_TZ = os.getenv("CLINIC_TIMEZONE", "Asia/Dubai")
 
+# Startup diagnostic so we can see what was actually loaded from .env.
+# If this prints the wrong value, your .env file isn't where dotenv is
+# looking — usually because uvicorn is launched from a different folder
+# than the .env file. If GOOGLE_CALENDAR_ID looks like a URL (starts
+# with "http"), it's wrong — Google's API wants the Calendar ID, not
+# the calendar's web URL. Get it from Calendar settings → "Integrate
+# calendar" → "Calendar ID" field.
+if not CALENDAR_ID:
+    print("[Calendar startup] GOOGLE_CALENDAR_ID is EMPTY in env. "
+          "Bookings will be saved but no Calendar events will be created.")
+elif CALENDAR_ID.startswith("http") or "/" in CALENDAR_ID or " " in CALENDAR_ID:
+    print(f"[Calendar startup] WARNING: GOOGLE_CALENDAR_ID looks invalid "
+          f"({CALENDAR_ID!r}). It should be an ID like "
+          f"'xxx@group.calendar.google.com', NOT a URL. Calendar writes "
+          f"will fail with 404 errors.")
+else:
+    # Show first 12 chars + last 30 chars so you can tell it loaded
+    # correctly without exposing the full ID to logs.
+    masked = CALENDAR_ID
+    if len(CALENDAR_ID) > 50:
+        masked = CALENDAR_ID[:12] + "..." + CALENDAR_ID[-30:]
+    print(f"[Calendar startup] Configured with calendar: {masked}")
+
 
 def create_appointment_event(lead: dict) -> dict:
     """Create a Google Calendar event for a confirmed booking.
@@ -113,9 +136,17 @@ def create_appointment_event(lead: dict) -> dict:
         if location_field:
             event["location"] = location_field
 
-        # If patient email looks valid, invite them so they get a reminder too
-        if email and "@" in email:
-            event["attendees"] = [{"email": email}]
+        # NOTE: We do NOT add the patient as a Google Calendar attendee.
+        # Google blocks service accounts from inviting attendees without
+        # Domain-Wide Delegation of Authority (a Workspace-admin-level
+        # config that's overkill for a clinic chatbot). The error you'd
+        # see is:
+        #   "Service accounts cannot invite attendees without Domain-Wide
+        #    Delegation of Authority."
+        # Instead, the patient's email is included in the event description
+        # (above) so the clinic can see who to contact. The patient gets
+        # their booking confirmation via Resend (email_service.py),
+        # NOT via Google Calendar invite.
 
         service = build(
             "calendar", "v3",
@@ -125,7 +156,8 @@ def create_appointment_event(lead: dict) -> dict:
         )
         created = service.events().insert(
             calendarId=CALENDAR_ID, body=event,
-            sendUpdates="all" if email else "none",
+            # No attendees, so no need for sendUpdates either
+            sendUpdates="none",
         ).execute()
 
         print(f"[Calendar] Event created: {created.get('htmlLink')}")

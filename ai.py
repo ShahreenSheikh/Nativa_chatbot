@@ -99,14 +99,41 @@ load_dotenv()
 _sessions: dict = {}
 SESSION_TTL_SECONDS = 60 * 60
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# LLM provider: Cerebras (OpenAI-compatible API).
+# Switched from Groq because Groq's Developer Tier was unavailable. Cerebras
+# offers a generous free tier (1M tokens/day, no credit card).
+#
+# Default model: gpt-oss-120b — Cerebras's recommended model for new
+# deployments. Llama-3.3-70b was deprecated in February 2026; Cerebras
+# recommends gpt-oss-120b as the replacement. It's a larger 120B-parameter
+# model, currently the fastest on Cerebras (~1,800 tok/s) and the most
+# affordable on their paid tier. You can override via LLM_MODEL env var.
+#
+# The .env variable is still accepted as GROQ_API_KEY for backward
+# compatibility with existing deployments; new deployments should use
+# CEREBRAS_API_KEY. Either works.
+CEREBRAS_API_KEY = (os.getenv("CEREBRAS_API_KEY", "")
+                    or os.getenv("GROQ_API_KEY", ""))
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss-120b")
 CLINIC_NAME = os.getenv("CLINIC_NAME", "NativaCare")
 
+# Kept for backward-compat with any code that still references GROQ_MODEL
+GROQ_MODEL = LLM_MODEL
+
 client = (
-    OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
-    if GROQ_API_KEY else None
+    OpenAI(api_key=CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
+    if CEREBRAS_API_KEY else None
 )
+
+# Startup diagnostic — visible in the uvicorn terminal so you can tell at
+# a glance whether the LLM is configured. If this prints "NOT set", the
+# bot will fall back to regex parsing and won't generate natural replies.
+if CEREBRAS_API_KEY:
+    masked = CEREBRAS_API_KEY[:8] + "..." + CEREBRAS_API_KEY[-4:] if len(CEREBRAS_API_KEY) > 16 else "***"
+    print(f"[LLM startup] Configured: Cerebras / {LLM_MODEL} (key: {masked})")
+else:
+    print("[LLM startup] CEREBRAS_API_KEY / GROQ_API_KEY NOT set. "
+          "Bot will use regex fallback only — replies will be basic.")
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +205,36 @@ ABU_DHABI_KEYWORDS = [
     "shahama", "khalidiyah", "khalidiya", "corniche", "hudayriyat",
     "al maryah", "maryah", "al reem",
 ]
+
+
+def is_too_generic_address(addr: str) -> bool:
+    """Return True if the address is just a city/area name with no building
+    or street detail. We can't dispatch a home visit to "abu dhabi" — the
+    midwife needs to know WHERE in Abu Dhabi.
+
+    Heuristic: looks generic if it has no digits AND is short (< 4 words),
+    AND every word it does have is in our area-keyword list.
+    """
+    if not addr:
+        return True
+    cleaned = addr.strip().lower()
+    if any(ch.isdigit() for ch in cleaned):
+        return False  # has a number — likely a building/street number
+    words = [w for w in cleaned.replace(",", " ").split() if w]
+    if not words:
+        return True
+    if len(words) >= 4:
+        return False  # 4+ words is probably specific enough
+    # If every word is part of a known area keyword (e.g. "abu dhabi",
+    # "al bateen"), the address is just the area name — not specific.
+    area_words = set()
+    for kw in ABU_DHABI_KEYWORDS:
+        for w in kw.split():
+            area_words.add(w)
+    common_words = {"the", "in", "at", "uae", "emirates", "city"}
+    if all(w in area_words or w in common_words for w in words):
+        return True
+    return False
 
 # States
 STATE_BROWSING = "browsing"
@@ -726,11 +783,14 @@ async def _llm_understand_call(messages: list, sys_prompt: str,
     full_sys = sys_prompt + extra
     t0 = _time.perf_counter()
     try:
-        resp = client.chat.completions.create(
+        resp = call_llm_with_retry(
             model=GROQ_MODEL,
             messages=[{"role": "system", "content": full_sys}] + messages,
             temperature=0.0,
-            max_tokens=400,
+            # max_tokens raised from 400 to 600 — GPT OSS 120B occasionally
+            # uses internal-reasoning tokens before producing the JSON
+            # output, so a tight cap can leave the response empty.
+            max_tokens=600,
             response_format={"type": "json_object"},
         )
         text = (resp.choices[0].message.content or "").strip()
@@ -1101,14 +1161,34 @@ async def compose_reply(session: dict, user_message: str,
         # Build the user-side messages separately so we can log them cleanly
         user_messages = history + [{"role": "user", "content": user_message}]
         messages = [{"role": "system", "content": sys_prompt}] + user_messages
-        resp = client.chat.completions.create(
+        resp = call_llm_with_retry(
             model=GROQ_MODEL,
             messages=messages,
             temperature=0.3,
-            max_tokens=320,
+            # max_tokens raised from 320 to 600 because GPT OSS 120B sometimes
+            # uses tokens for internal scaffolding before user-visible output.
+            # 320 was producing truncated lists ("Vaginal Birth After Cesarean
+            # Workshop - 120 min (clinic)" with no price) and occasionally
+            # empty replies entirely when the model hit the limit during
+            # reasoning. 600 is still bounded but gives more headroom.
+            max_tokens=600,
         )
-        text = shorten((resp.choices[0].message.content or "").strip(),
-                       max_words=180)
+        raw_content = (resp.choices[0].message.content or "").strip()
+        # GPT OSS 120B occasionally returns empty content (especially under
+        # load or when max_tokens cuts off mid-reasoning). Treat that as an
+        # error so the user gets the graceful "try again" fallback instead
+        # of a silent empty reply that the UI renders as "(no reply)".
+        if not raw_content:
+            finish_reason = ""
+            try:
+                finish_reason = resp.choices[0].finish_reason or ""
+            except (AttributeError, IndexError):
+                pass
+            raise RuntimeError(
+                f"LLM returned empty content (finish_reason={finish_reason!r}). "
+                f"Likely max_tokens was hit during model reasoning."
+            )
+        text = shorten(raw_content, max_words=180)
         elapsed = int((_time.perf_counter() - t0) * 1000)
         _debug_log_llm(
             step="compose",
@@ -1152,6 +1232,82 @@ def is_rate_limit_error(err: Exception) -> bool:
         or "tokens per day" in err_str
         or "quota" in err_str
     )
+
+
+def is_transient_error(err: Exception) -> bool:
+    """Detect errors that are worth retrying because they typically clear
+    in seconds. Cerebras 'queue_exceeded' is the main one — it means the
+    provider's shared queue is briefly full, not that we've hit a quota.
+
+    Returns True only for errors that might genuinely succeed on a retry.
+    Returns False for hard errors (auth, daily quotas) where retrying
+    just wastes time."""
+    err_str = str(err).lower()
+    # Cerebras-specific transient: shared queue is full right now
+    if "queue_exceeded" in err_str or "queue exceeded" in err_str:
+        return True
+    if "too_many_requests" in err_str and "queue" in err_str:
+        return True
+    # Generic transient: high traffic / overload / temporary
+    if "high traffic" in err_str or "try again soon" in err_str:
+        return True
+    if "service unavailable" in err_str or "503" in err_str:
+        return True
+    if "502" in err_str or "504" in err_str or "gateway" in err_str:
+        return True
+    # Network-level transient
+    if "timeout" in err_str or "timed out" in err_str:
+        return True
+    if "connection" in err_str and ("reset" in err_str or "refused" in err_str):
+        return True
+    # Daily quota / rate-limit per-day are NOT transient — they don't
+    # clear in seconds. Hard 429s on quota fall through to False.
+    if "tokens per day" in err_str or "tpd" in err_str:
+        return False
+    if "tokens per hour" in err_str or "tph" in err_str:
+        return False
+    return False
+
+
+def call_llm_with_retry(*, model: str, messages: list,
+                        temperature: float, max_tokens: int,
+                        response_format: dict = None,
+                        max_attempts: int = 3):
+    """Call client.chat.completions.create with auto-retry on transient
+    errors (Cerebras queue_exceeded, 503, gateway, network timeouts).
+
+    Retries are quick (1s, then 2s) to keep total latency under ~4s in
+    the worst case. Hard errors (auth, quota exhausted, malformed
+    request) are re-raised immediately — no point retrying them."""
+    import time as _t
+    backoffs = [1.0, 2.0]  # seconds between attempts after first failure
+    last_err = None
+    for attempt in range(max_attempts):
+        try:
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if response_format is not None:
+                kwargs["response_format"] = response_format
+            return client.chat.completions.create(**kwargs)
+        except Exception as e:
+            last_err = e
+            if attempt >= max_attempts - 1:
+                # Exhausted retries — surface the error to caller
+                raise
+            if not is_transient_error(e):
+                # Permanent error — don't waste time retrying
+                raise
+            wait = backoffs[min(attempt, len(backoffs) - 1)]
+            _debug_event(f"LLM transient error (attempt {attempt + 1}/{max_attempts}): {str(e)[:120]} — retrying in {wait}s")
+            _t.sleep(wait)
+    # Defensive: shouldn't reach here, but just in case
+    if last_err:
+        raise last_err
+    return None
 
 
 def llm_error_reply(session: dict, err: Exception) -> str:
@@ -1226,6 +1382,102 @@ async def is_service_bookable(service_id: str) -> bool:
         l.get("service_id") == service_id and l.get("midwife_id") in active_ids
         for l in links
     )
+
+
+async def validate_midwife_for_booking(midwife_name: str, service_id: str,
+                                       date_str: str, time_str: str) -> dict:
+    """Check if a midwife (by name) is a valid choice for the given
+    service, date, and time. Returns a dict with:
+      - ok: bool — overall yes/no
+      - midwife_id: str — resolved ID if the name matched (else "")
+      - midwife_name: str — canonical name from the roster
+      - reason: str — if not ok, why ("unknown_midwife" |
+        "service_mismatch" | "no_slot_at_time")
+      - alternatives: list — context-dependent suggestions
+        (other midwives for that service; or other times this midwife
+        has available)
+
+    This is used when the user requests a midwife change at the booking
+    summary, OR when re-validating before a final commit.
+    """
+    result = {
+        "ok": False, "midwife_id": "", "midwife_name": "",
+        "reason": "", "alternatives": [],
+    }
+    if not midwife_name:
+        result["reason"] = "no_name"
+        return result
+
+    midwives, links = await _gather(get_midwives, get_midwife_services)
+
+    # Resolve name to canonical roster entry (case-insensitive)
+    target_lc = midwife_name.strip().lower()
+    matched = next(
+        (m for m in midwives
+         if (m.get("midwife_name") or "").lower() == target_lc
+         and m.get("active", True)),
+        None,
+    )
+    if not matched:
+        result["reason"] = "unknown_midwife"
+        # Alternatives: list all active midwives for this service
+        active_ids = {m["midwife_id"] for m in midwives if m.get("active", True)}
+        svc_midwife_ids = {l["midwife_id"] for l in links
+                           if l.get("service_id") == service_id
+                           and l.get("midwife_id") in active_ids}
+        result["alternatives"] = [
+            m["midwife_name"] for m in midwives
+            if m["midwife_id"] in svc_midwife_ids
+        ]
+        return result
+
+    result["midwife_id"] = matched["midwife_id"]
+    result["midwife_name"] = matched["midwife_name"]
+
+    # Check: does this midwife offer this service?
+    offers_service = any(
+        l.get("service_id") == service_id
+        and l.get("midwife_id") == matched["midwife_id"]
+        for l in links
+    )
+    if not offers_service:
+        result["reason"] = "service_mismatch"
+        # Alternatives: midwives who DO offer this service
+        active_ids = {m["midwife_id"] for m in midwives if m.get("active", True)}
+        svc_midwife_ids = {l["midwife_id"] for l in links
+                           if l.get("service_id") == service_id
+                           and l.get("midwife_id") in active_ids}
+        result["alternatives"] = [
+            m["midwife_name"] for m in midwives
+            if m["midwife_id"] in svc_midwife_ids
+        ]
+        return result
+
+    # Check: is this midwife available at the requested date+time?
+    if date_str and time_str:
+        try:
+            day = await get_availability(service_id, date_str)
+        except Exception:
+            day = None
+        if day and day.slots:
+            slot_match = next(
+                (s for s in day.slots
+                 if s.start_time == time_str
+                 and matched["midwife_name"] in (s.midwife_name or "")),
+                None,
+            )
+            if not slot_match:
+                result["reason"] = "no_slot_at_time"
+                # Alternatives: times this midwife IS available on this day
+                this_midwife_slots = [
+                    s.start_time for s in day.slots
+                    if matched["midwife_name"] in (s.midwife_name or "")
+                ]
+                result["alternatives"] = this_midwife_slots[:6]
+                return result
+
+    result["ok"] = True
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1411,6 +1663,68 @@ def detect_time_of_day(message: str) -> Optional[str]:
         if phrase in lc:
             return bucket
     return None
+
+
+# Day-type filtering: weekend (Sat/Sun) vs weekday (Mon-Fri).
+# Different from time-of-day buckets — this filters WHICH DAYS, not which
+# hours within a day. Used when the user says "show me weekend slots"
+# or "any weekday options."
+_WEEKEND_PHRASES = [
+    "weekend", "weekends", "saturday or sunday", "sat or sun",
+    "this weekend", "next weekend",
+]
+_WEEKDAY_PHRASES = [
+    "weekday", "weekdays", "during the week", "in the week",
+    "work week", "mon to fri", "monday to friday",
+]
+
+
+def detect_day_type(message: str) -> Optional[str]:
+    """Return 'weekend' or 'weekday' if the message filters by day type,
+    else None."""
+    if not message:
+        return None
+    lc = message.lower()
+    # Check weekend FIRST because "this weekend" / "next weekend" should
+    # match before any generic "week" substring in weekday phrases.
+    if any(p in lc for p in _WEEKEND_PHRASES):
+        return "weekend"
+    if any(p in lc for p in _WEEKDAY_PHRASES):
+        return "weekday"
+    return None
+
+
+async def render_days_by_type(service_id: str, day_type: str,
+                              service_name: str = "") -> str:
+    """List days in the next 7 days that match the requested type
+    (weekend = Sat/Sun, weekday = Mon-Fri)."""
+    from datetime import datetime as _dt
+    days = await get_next_available_days(service_id, num_days=14)
+    # weekday() returns 0=Mon ... 5=Sat, 6=Sun
+    weekend_indices = {5, 6}
+    matching = []
+    for d in days:
+        try:
+            parsed = _dt.strptime(d.date, "%Y-%m-%d")
+            is_weekend = parsed.weekday() in weekend_indices
+            if (day_type == "weekend" and is_weekend) or \
+               (day_type == "weekday" and not is_weekend):
+                if d.slots:  # only include days with availability
+                    matching.append((d.date, parsed, len(d.slots)))
+        except ValueError:
+            continue
+    if not matching:
+        sn = service_name or "this service"
+        nothing_word = ("weekend" if day_type == "weekend" else "weekday")
+        return (f"No {nothing_word} slots are available for {sn} in the "
+                f"next two weeks. Please call us at +971 50 729 7197 "
+                f"to discuss alternatives.")
+    lines = [f"{'Weekend' if day_type == 'weekend' else 'Weekday'} availability:"]
+    for d, parsed, n in matching[:7]:
+        pretty = parsed.strftime("%A, %B %d").replace(" 0", " ")
+        lines.append(f"  • {pretty} ({n} slot{'s' if n != 1 else ''} available)")
+    lines.append("\nReply with a day.")
+    return "\n".join(lines)
 
 
 _OTHER_DAY_PATTERNS = [
@@ -1609,7 +1923,7 @@ def render_next_detail_question(session: dict) -> Optional[str]:
         session["email_asked"] = True
         session["awaiting_field"] = "email"
         return ("Please share your email for confirmation, or type 'skip' "
-                "if you'd rather not.")
+                "if you don't have one.")
     if (location_type == "home"
             and not valid(lead.get("patient_address"))):
         session["awaiting_field"] = "patient_address"
@@ -1946,11 +2260,24 @@ async def get_ai_response(session_id: str, user_message: str,
 
     # Apply the OTHER slots normally. Skip service_id/service_name since
     # those are handled above via candidate_service.
+    #
+    # Special case: when state == AWAITING_CONFIRM, never let the slot-
+    # applier silently change midwife_id / midwife_name. The user is at
+    # the booking summary and a midwife change requires validation (does
+    # this midwife offer this service? are they free at this time?).
+    # The AWAITING_CONFIRM state handler picks up the proposed midwife
+    # from new_slots and validates explicitly.
+    blocked_keys = set()
+    if state == STATE_AWAITING_CONFIRM:
+        blocked_keys.update(("midwife_id", "midwife_name"))
+
     for key, value in new_slots.items():
         if not value:
             continue
         if key in ("service_id", "service_name"):
             continue  # handled above
+        if key in blocked_keys:
+            continue  # handled by state handler with validation
 
         # Only set if not already set, or if it's an answer-style update
         if not valid(lead.get(key)):
@@ -2082,6 +2409,53 @@ async def get_ai_response(session_id: str, user_message: str,
     # =====================================================================
     if state == STATE_AWAITING_CONFIRM:
         if intent == "confirm":
+            # Re-validate the slot before committing. Protects against:
+            #   - Another session having taken this slot since we showed it
+            #   - The midwife's schedule changing in the sheet
+            #   - Long-pending sessions where availability shifted
+            # If the slot is no longer available, tell the user honestly
+            # and re-show the day list instead of committing a bad booking.
+            svc_id = lead.get("service_id")
+            mw_name = lead.get("midwife_name")
+            date_str = lead.get("appointment_date")
+            time_str = lead.get("appointment_time")
+            if svc_id and mw_name and date_str and time_str:
+                check = await validate_midwife_for_booking(
+                    mw_name, svc_id, date_str, time_str,
+                )
+                if not check["ok"]:
+                    _debug_event(
+                        f"Slot re-validation FAILED at commit: "
+                        f"{check['reason']} for {mw_name} on {date_str} {time_str}"
+                    )
+                    # Reset to slot-picking so the user can pick another time
+                    lead.pop("appointment_time", None)
+                    lead.pop("appointment_date", None)
+                    lead.pop("midwife_id", None)
+                    lead.pop("midwife_name", None)
+                    session["state"] = STATE_SLOT_PICKING
+                    if check["reason"] == "no_slot_at_time":
+                        reply = (
+                            f"That time isn't available anymore — looks like "
+                            f"the slot was taken since I showed it to you. "
+                            f"Sorry about that. Let me show you the current "
+                            f"availability.\n\n"
+                            + await render_next_available_days(
+                                svc_id, service_name=lead.get("service_name", "")
+                            )
+                        )
+                    else:
+                        reply = (
+                            f"Something has changed in the schedule for this "
+                            f"slot. Let me show you the latest availability.\n\n"
+                            + await render_next_available_days(
+                                svc_id, service_name=lead.get("service_name", "")
+                            )
+                        )
+                    append_history(session, user_message, reply)
+                    save_chat_log(session_id, user_message, reply)
+                    return response_payload(reply, session)
+
             reply = await commit_appointment(session, source)
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -2091,6 +2465,78 @@ async def get_ai_response(session_id: str, user_message: str,
             session["lead"] = {}
             session["email_asked"] = False
             reply = "Cancelled. Let me know if you'd like to start over."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Midwife-correction path: user wants to swap to a different midwife.
+        # The slot-applier was prevented from updating midwife fields in this
+        # state (see slot-applier blocked_keys logic), so we handle it here
+        # with proper validation. Refuses to swap if the new midwife doesn't
+        # offer this service, or isn't free at this date/time.
+        proposed_mw = new_slots.get("midwife_name")
+        if (proposed_mw
+                and proposed_mw.strip().lower() != (lead.get("midwife_name") or "").strip().lower()):
+            _debug_event(f"Midwife-correction request: {lead.get('midwife_name')} → {proposed_mw}")
+            check = await validate_midwife_for_booking(
+                proposed_mw,
+                lead.get("service_id", ""),
+                lead.get("appointment_date", ""),
+                lead.get("appointment_time", ""),
+            )
+            if check["ok"]:
+                # Valid swap — apply and re-show summary
+                lead["midwife_id"] = check["midwife_id"]
+                lead["midwife_name"] = check["midwife_name"]
+                _debug_event(f"Midwife swapped to {check['midwife_name']} (validated)")
+                reply = ("Got it — switched to "
+                         f"{check['midwife_name']}.\n\n"
+                         + booking_summary(session))
+            else:
+                # Invalid — explain honestly and offer alternatives
+                reason = check["reason"]
+                if reason == "unknown_midwife":
+                    alt = check.get("alternatives") or []
+                    alt_text = (", ".join(alt) if alt
+                                else "no one available for this service")
+                    reply = (f"I don't recognize \"{proposed_mw}\" as one of "
+                             f"our midwives. For "
+                             f"{lead.get('service_name', 'this service')}, "
+                             f"you can choose: {alt_text}. Reply with a "
+                             f"name, or 'yes' to keep your current booking "
+                             f"with {lead.get('midwife_name', '')}.")
+                elif reason == "service_mismatch":
+                    alt = check.get("alternatives") or []
+                    alt_text = (", ".join(alt) if alt
+                                else "no one currently scheduled")
+                    reply = (f"{check.get('midwife_name', proposed_mw)} doesn't "
+                             f"offer {lead.get('service_name', 'this service')}. "
+                             f"For this service you can choose: {alt_text}. "
+                             f"Or reply 'yes' to keep your booking with "
+                             f"{lead.get('midwife_name', '')}.")
+                elif reason == "no_slot_at_time":
+                    alt = check.get("alternatives") or []
+                    if alt:
+                        alt_text = ", ".join(alt)
+                        reply = (f"{check.get('midwife_name', proposed_mw)} isn't "
+                                 f"available at {lead.get('appointment_time', '')} "
+                                 f"on {lead.get('appointment_date', '')}. "
+                                 f"Times {check['midwife_name']} has that day: "
+                                 f"{alt_text}. Reply with a different time, "
+                                 f"or 'yes' to keep "
+                                 f"{lead.get('midwife_name', '')}.")
+                    else:
+                        reply = (f"{check.get('midwife_name', proposed_mw)} has "
+                                 f"no availability on "
+                                 f"{lead.get('appointment_date', '')}. "
+                                 f"Reply 'yes' to keep your booking with "
+                                 f"{lead.get('midwife_name', '')}, or tell me "
+                                 f"a different day.")
+                else:
+                    reply = (f"I can't switch to {proposed_mw} for this "
+                             f"appointment. Reply 'yes' to keep your "
+                             f"current booking with "
+                             f"{lead.get('midwife_name', '')}.")
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -2169,6 +2615,50 @@ async def get_ai_response(session_id: str, user_message: str,
             session["state"] = STATE_BROWSING
             session["lead"] = {}
             reply = "Booking cancelled. Let me know if there's anything else."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Date correction: user named a different day while one is already
+        # set in the lead. Always update — regardless of intent classification.
+        # Without this guard, "tuesday" said when lead has Monday gets
+        # rejected by the slot-applier's "only-update-on-correction" rule,
+        # and the user sees Monday slots again. Real user typed "tuesday"
+        # twice in a transcript before it took.
+        # We only intercept if it's purely a date pick (no time also being
+        # set this turn) — otherwise let the date+time flow downstream lock
+        # the slot directly.
+        new_date = new_slots.get("appointment_date")
+        new_time = new_slots.get("appointment_time")
+        current_date = lead.get("appointment_date")
+        if (new_date and new_date != current_date and not new_time
+                and lead.get("service_id")):
+            _debug_event(
+                f"Date correction mid-slot-picking: {current_date} → {new_date}"
+            )
+            lead["appointment_date"] = new_date
+            lead.pop("appointment_time", None)
+            reply = await render_slots_for_day(
+                lead["service_id"], new_date
+            )
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Day-type filter: "weekend slots" / "any weekday options" / etc.
+        # List days of the requested type with available slots. Runs
+        # before wants_different_day because "weekend" alone would also
+        # match the broader different-day patterns.
+        day_type = detect_day_type(user_message)
+        if day_type and lead.get("service_id"):
+            _debug_event(f"Day-type filter requested: {day_type}")
+            # Clear current date so the user lands on the new selection
+            lead.pop("appointment_date", None)
+            lead.pop("appointment_time", None)
+            reply = await render_days_by_type(
+                lead["service_id"], day_type,
+                service_name=lead.get("service_name", ""),
+            )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -2365,6 +2855,33 @@ async def get_ai_response(session_id: str, user_message: str,
                          f"doesn't look like an Abu Dhabi address. Could you "
                          f"give an Abu Dhabi address (building or area name)? "
                          f"Or reply 'clinic' to switch to a clinic visit.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Too-generic address: in Abu Dhabi but missing building/street.
+        # "abu dhabi" alone isn't enough — the midwife needs to know where
+        # to actually go. Ask for a specific building or area.
+        if (lead.get("location_type") == "home" and addr
+                and is_too_generic_address(addr)):
+            rejection_count = session.get("address_rejection_count", 0) + 1
+            session["address_rejection_count"] = rejection_count
+            lead["patient_address"] = ""
+            session["awaiting_field"] = "patient_address"
+            if rejection_count >= 2:
+                session["state"] = STATE_BROWSING
+                session["lead"] = {}
+                session.pop("address_rejection_count", None)
+                reply = (f"I'd need a more specific address than \"{addr}\" "
+                         f"to arrange a home visit. Please call us at "
+                         f"+971 50 729 7197 to book this one. Happy to "
+                         f"help with anything else.")
+            else:
+                reply = (f"\"{addr}\" is a bit too general — could you give "
+                         f"a building name, street, or specific area "
+                         f"(e.g. 'Bateen Tower' or 'Al Raha Gardens villa "
+                         f"12')? Or reply 'clinic' to switch to a clinic "
+                         f"visit.")
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
