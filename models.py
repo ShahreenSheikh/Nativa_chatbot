@@ -44,17 +44,28 @@ class AppointmentLead(BaseModel):
     midwife_name: str = ""
     location_type: str = ""        # "home" / "clinic" / "online"
     patient_address: str = ""      # required for home visits
-    appointment_date: str = ""     # YYYY-MM-DD
+    appointment_date: str = ""     # YYYY-MM-DD — for multi-visit programs,
+                                    # this is the FIRST (earliest) visit;
+                                    # the rest are in additional_visits.
     appointment_time: str = ""     # HH:MM (start time)
     duration_minutes: int = 60
-    price_aed: str = ""
+    price_aed: str = ""            # TOTAL price for the whole booking —
+                                    # for a multi-visit program this is the
+                                    # program price, not a per-visit price.
     package_id: str = ""           # if booked from a package
     insurance: str = ""            # placeholder; not used in v1
     language: str = "en"
     source: str = "website"
     status: str = "pending"
     notes: str = ""
+    payment_status: str = ""       # "" / "pending_verification" / "verified"
     created_at: str = ""
+    additional_visits: list = []
+    # For multi-visit programs (e.g. "Postnatal Recovery Program — 3
+    # visits"): each entry is {"date": "YYYY-MM-DD", "time": "HH:MM",
+    # "midwife_id": str, "midwife_name": str} for visit 2, 3, ... N. Empty
+    # for an ordinary single-visit booking — every existing code path that
+    # only knows about one appointment_date/time keeps working unchanged.
 
 
 class AppointmentConfirmation(BaseModel):

@@ -1,0 +1,523 @@
+<!DOCTYPE html><html lang="en" class="light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;family=Inter:wght@400;500;600&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet"><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">try{
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "secondary-fixed-dim": "#bdcbac",
+                    "inverse-surface": "#2f3133",
+                    "tertiary-fixed-dim": "#c7c6c5",
+                    "on-primary-fixed": "#251a00",
+                    "on-error": "#ffffff",
+                    "sage-light": "#A3B096",
+                    "on-background": "#1a1c1e",
+                    "surface-container-highest": "#e2e2e5",
+                    "surface-bright": "#f9f9fc",
+                    "inverse-on-surface": "#f0f0f3",
+                    "inverse-primary": "#e7c272",
+                    "gold-muted": "#D4C294",
+                    "secondary-container": "#d9e8c7",
+                    "error-container": "#ffdad6",
+                    "on-primary-container": "#3f2e00",
+                    "surface-border": "#E5E7EB",
+                    "surface-container-high": "#e8e8ea",
+                    "secondary-fixed": "#d9e8c7",
+                    "on-secondary-container": "#5b694f",
+                    "on-surface-variant": "#4d4638",
+                    "on-secondary-fixed": "#131f0b",
+                    "primary-fixed-dim": "#e7c272",
+                    "error": "#ba1a1a",
+                    "surface-container": "#eeeef0",
+                    "outline-variant": "#d0c5b3",
+                    "on-surface": "#1a1c1e",
+                    "tertiary": "#5e5e5d",
+                    "outline": "#7f7667",
+                    "surface": "#f9f9fc",
+                    "on-primary-fixed-variant": "#5b4300",
+                    "on-tertiary-fixed-variant": "#464746",
+                    "surface-variant": "#e2e2e5",
+                    "on-tertiary-container": "#2f3130",
+                    "on-primary": "#ffffff",
+                    "tertiary-fixed": "#e3e2e0",
+                    "surface-tint": "#765a14",
+                    "chart-accent-2": "#B59449",
+                    "background": "#f9f9fc",
+                    "chart-accent-3": "#D4C294",
+                    "on-secondary-fixed-variant": "#3e4b33",
+                    "primary": "#765a14",
+                    "surface-dim": "#dadadc",
+                    "on-error-container": "#93000a",
+                    "tertiary-container": "#989897",
+                    "primary-fixed": "#ffdf9c",
+                    "secondary": "#556349",
+                    "on-tertiary-fixed": "#1a1c1b",
+                    "surface-container-low": "#f3f3f6",
+                    "on-tertiary": "#ffffff",
+                    "on-secondary": "#ffffff",
+                    "chart-accent-1": "#7D8B6F",
+                    "surface-container-lowest": "#ffffff",
+                    "primary-container": "#b59449"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "unit": "4px",
+                    "gutter-md": "24px",
+                    "margin-page": "40px",
+                    "stack-md": "16px",
+                    "container-max": "1440px",
+                    "stack-sm": "8px",
+                    "stack-lg": "32px"
+            },
+            "fontFamily": {
+                    "headline-lg": ["Plus Jakarta Sans"],
+                    "label-md": ["Inter"],
+                    "headline-md": ["Plus Jakarta Sans"],
+                    "headline-xl": ["Plus Jakarta Sans"],
+                    "label-sm": ["Inter"],
+                    "body-lg": ["Inter"],
+                    "body-md": ["Inter"],
+                    "headline-lg-mobile": ["Plus Jakarta Sans"]
+            },
+            "fontSize": {
+                    "headline-lg": ["32px", {"lineHeight": "1.25", "fontWeight": "600"}],
+                    "label-md": ["14px", {"lineHeight": "1.4", "letterSpacing": "0.01em", "fontWeight": "500"}],
+                    "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                    "headline-xl": ["48px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                    "label-sm": ["12px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                    "body-lg": ["18px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                    "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "1.2", "fontWeight": "600"}]
+            }
+          },
+        },
+      }
+    }catch(_e){}</script><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;family=Plus+Jakarta+Sans:wght@100..900&amp;display=swap" rel="stylesheet"></head><body class="bg-background text-on-surface font-body-md overflow-hidden">
+<!-- Top Navigation Bar -->
+<header class="bg-surface/80 backdrop-blur-xl dark:bg-inverse-surface/80 sticky top-0 z-50 border-b border-surface-border dark:border-outline-variant">
+<div class="flex justify-between items-center w-full px-gutter-md h-16">
+<a href="1_dashboard.html" class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">NativaCare</a>
+<div class="flex items-center gap-3">
+<div class="text-right">
+<div class="text-xs font-bold text-on-surface">Clinic Admin</div>
+<div class="text-[10px] text-on-surface-variant">NativaCare HQ</div>
+</div>
+<div class="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center overflow-hidden border-2 border-primary/20 shrink-0">
+<span class="material-symbols-outlined text-primary text-[20px]">account_circle</span>
+</div>
+</div>
+</div>
+</header>
+<!-- Sidebar Navigation -->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-white dark:bg-inverse-surface border-r border-surface-border dark:border-outline-variant flex flex-col py-6 px-4 z-40">
+<nav class="flex-1 space-y-1">
+<a href="1_dashboard.html" class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="font-label-md">Dashboard</span>
+</a>
+<a href="2_appointments.html" class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all">
+<span class="material-symbols-outlined" data-icon="calendar_month">calendar_month</span>
+<span class="font-label-md">Appointments</span>
+</a>
+<a href="5_patients.html" class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+<span class="font-label-md">Patients</span>
+</a>
+<a href="3_ai_chatbot_conversations.html" class="flex items-center gap-3 px-4 py-3 rounded-xl bg-secondary-container/50 text-on-secondary-container border-l-4 border-primary transition-all">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+<span class="font-label-md">Conversations</span>
+</a>
+<div class="pt-4 pb-2 px-4 uppercase text-[10px] font-bold text-outline-variant tracking-widest">Business</div>
+<a href="4_payments.html" class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all">
+<span class="material-symbols-outlined" data-icon="payments">payments</span>
+<span class="font-label-md">Revenue</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-surface-border space-y-2">
+<a href="2_appointments.html" class="w-full bg-primary text-white py-3 px-4 rounded-xl font-label-md flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/10">
+<span class="material-symbols-outlined text-[20px]">add</span>
+New Booking
+</a>
+<button id="logoutBtn" class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-on-surface-variant hover:bg-error/10 hover:text-error transition-all text-label-sm font-bold">
+<span class="material-symbols-outlined text-[18px]">logout</span>
+Disconnect
+</button>
+</div>
+</aside>
+<!-- Main Canvas Area -->
+<main class="ml-64 h-[calc(100vh-64px)] flex flex-col bg-background relative overflow-hidden">
+<!-- Header -->
+<header class="h-16 px-gutter-md bg-surface/80 backdrop-blur-xl border-b border-surface-border flex justify-between items-center sticky top-0 z-30 shrink-0">
+<div class="flex items-center gap-4">
+<h2 class="font-headline-md text-headline-md font-semibold text-primary">Conversations</h2>
+<div class="h-6 w-[1px] bg-outline-variant mx-2"></div>
+<div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-low border border-surface-border">
+<span class="w-2 h-2 rounded-full bg-outline-variant" id="convStatusDot"></span>
+<span class="font-label-sm text-label-sm text-secondary" id="convStatusText">Not connected</span>
+</div>
+</div>
+<div class="flex items-center gap-2 flex-1 max-w-md mx-4">
+<input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<input id="adminKeyInput" type="password" placeholder="Admin key" class="w-28 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all shrink-0">Connect</button>
+<button id="refreshBtn" class="bg-surface-container-low text-on-surface-variant px-4 py-2 rounded-full text-sm font-bold hover:bg-surface-container transition-all shrink-0">Refresh</button>
+</div>
+</header>
+<div class="flex-1 flex overflow-hidden min-h-0">
+<!-- LEFT: Conversations List (Split-->
+<section class="w-96 border-r border-surface-border bg-white/50 flex flex-col min-h-0">
+<div class="p-4 border-b border-surface-border">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant opacity-60">search</span>
+<input type="text" placeholder="Search threads..." class="w-full pl-10 pr-4 py-2 bg-surface-container-low border-none rounded-xl text-label-md focus:ring-2 focus:ring-primary/20">
+</div>
+</div>
+<div class="flex-1 overflow-y-auto min-h-0" id="conversationList">
+<p class="p-4 text-label-sm text-on-surface-variant">Connect your backend above to load real conversations from <code>/chat-logs</code>.</p>
+</div>
+</section>
+<!-- CENTER: Chat Interface -->
+<section class="flex-1 flex flex-col bg-white overflow-hidden relative min-h-0">
+<!-- Chat Header -->
+<div class="h-16 px-6 border-b border-surface-border flex justify-between items-center bg-surface-bright shrink-0">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center font-bold text-on-secondary-container" id="chatAvatarLetter">?</div>
+<div>
+<h3 class="font-label-md font-bold" id="chatHeaderName">Select a conversation</h3>
+<p class="text-[11px] text-on-surface-variant" id="chatHeaderSub">Or start a new one using the box below</p>
+</div>
+</div>
+<button id="takeoverBtn" class="hidden items-center gap-2 px-4 py-2 rounded-full text-label-sm font-bold transition-all" onclick="toggleTakeover()">
+<span class="material-symbols-outlined text-[18px]" id="takeoverIcon">support_agent</span>
+<span id="takeoverLabel">Take over</span>
+</button>
+</div>
+<!-- Chat Body -->
+<div class="flex-1 p-6 overflow-y-auto flex flex-col gap-6 bg-[#F9F8F6]/50 min-h-0" id="chatBody">
+<p class="text-label-sm text-on-surface-variant text-center">No conversation selected.</p>
+</div>
+<!-- Chat Footer -->
+<div class="p-6 border-t border-surface-border shrink-0">
+<div id="takeoverBanner" class="hidden mb-3 px-4 py-2 rounded-xl bg-error-container/30 border border-error/20 text-label-sm text-on-error-container flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px]">support_agent</span>
+<span>Human takeover is ON for this conversation — the bot is silent and your replies go straight to the patient.</span>
+</div>
+<div class="flex flex-col gap-2">
+<div class="flex items-center gap-3 px-4 py-3 bg-surface-container-low border border-surface-border rounded-2xl focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+<input type="text" id="chatSendInput" placeholder="Type a message as a patient would…" class="flex-1 bg-transparent border-none focus:ring-0 text-label-md p-0">
+<button id="chatSendBtn" class="w-10 h-10 rounded-xl bg-surface-container-highest flex items-center justify-center text-on-surface-variant hover:text-primary transition-all">
+<span class="material-symbols-outlined">send</span>
+</button>
+</div>
+<div class="flex justify-center">
+<p class="text-[10px] text-on-surface-variant/60" id="chatFooterHint">Press Enter to send (this simulates a patient message, for testing). For emergencies call <span class="text-error font-bold">998</span>.</p>
+</div>
+</div>
+</div>
+</section>
+<!-- RIGHT: Dashboard Insights & Timeline -->
+<section class="w-[400px] border-l border-surface-border bg-surface-bright flex flex-col p-6 gap-6 overflow-y-auto min-h-0">
+<h4 class="font-headline-md text-[18px] text-on-surface">Bot Performance</h4>
+<!-- Metrics Bento Grid -->
+<div class="grid grid-cols-2 gap-4">
+<div class="p-4 rounded-2xl bg-white border border-surface-border">
+<p class="text-[11px] text-on-surface-variant uppercase font-bold tracking-wider mb-1">Conversations</p>
+<p class="text-headline-md font-bold text-primary" id="metricConvos">–</p>
+<p class="text-[10px] text-on-surface-variant mt-1">sessions in last 100 turns</p>
+</div>
+<div class="p-4 rounded-2xl bg-white border border-surface-border">
+<p class="text-[11px] text-on-surface-variant uppercase font-bold tracking-wider mb-1">Bookings</p>
+<p class="text-headline-md font-bold text-primary" id="metricBookings">–</p>
+<p class="text-[10px] text-on-surface-variant mt-1">total, all channels</p>
+</div>
+</div>
+<!-- Midwife Status -->
+<div class="p-5 rounded-2xl bg-secondary-container/30 border border-secondary-container flex flex-col gap-3">
+<h5 class="text-[11px] font-bold uppercase tracking-widest text-on-secondary-container opacity-60">Online Staff (illustrative)</h5>
+<div class="flex flex-col gap-3">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-8 h-8 rounded-full bg-white border border-surface-border relative flex items-center justify-center overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Professional profile portrait of a female midwife in clinical attire, soft focused hospital background, serene warm lighting, high quality clinical photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCg5e3uaASwEQLEFSyCGmB3MBzZVp3_8A2DBlcjiO3QVx_potHdpRUQSjLtL6xY_uS7aay6RpRrO1163cWWiMjEibU9z32DeVRQDEqAxdXBaVOv9fIR0V21iMOsJJAvKui6qFdvHtLKuRyAxOzpScNNFqyVS893CfWJVD1FJOtpd2sHsFlJ-CrHnH7VG8KrCCi-In3ox9CtpSKLP1Ih14u9hqfUmmQmJVpVbkhBIlZuRHx1qD9JBWE9UJFfARe6RGlY87sr9-Juvqk">
+<div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 border border-white rounded-full"></div>
+</div>
+<span class="text-label-sm font-medium">Nora J. (Senior)</span>
+</div>
+<span class="text-[10px] text-on-surface-variant">3 Active Chats</span>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-8 h-8 rounded-full bg-white border border-surface-border relative flex items-center justify-center overflow-hidden">
+<img class="w-full h-full object-cover" data-alt="Professional profile portrait of an experienced midwife with a compassionate expression, minimalist clinic interior background, soft daylight, corporate modern aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAzxjfTjVrDU3Vs6AKGWiYMK8vmQdjugraMtzFoO_695NcchQIk4-LQ1yh5dAa31d4ajz7BCLv4T7T_GItTDqB_CpQq30PGugb-Zi_8CZjjZaO3uSPLarEqUQQbJzxCF4ZitAAxYhkGrOXAVkThnjC77GV7QpJhdw48uZ51vTzpZH2AdpFAxxWJXHNpzKB9A6-saxtuPhjWxd4_7yrVNyJs9KQDHOS3qPlqeHsPDxHD4XG_SgG-hl1Ky-x6mdaU_9SwxpzYNZoRz0A">
+<div class="absolute bottom-0 right-0 w-2 h-2 bg-green-500 border border-white rounded-full"></div>
+</div>
+<span class="text-label-sm font-medium">Amal R.</span>
+</div>
+<span class="text-[10px] text-on-surface-variant">1 Active Chat</span>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- Footer (Shared Component Mapping) -->
+<footer class="h-12 bg-surface-container-lowest border-t border-surface-border flex justify-between items-center px-6 w-full text-on-surface-variant">
+<p class="font-label-sm text-label-sm">© 2024 NativaCare Abu Dhabi Community Midwives. All Rights Reserved.</p>
+<div class="flex gap-6">
+<a class="font-label-sm text-label-sm hover:text-primary transition-colors" href="#">Privacy Policy</a>
+<a class="font-label-sm text-label-sm hover:text-primary transition-colors" href="#">Terms of Service</a>
+<a class="font-label-sm text-label-sm hover:text-primary transition-colors" href="#">Clinical Guidelines</a>
+</div>
+</footer>
+</main>
+<!-- Visual Polish: Atmosphere-->
+<div class="fixed top-0 right-0 w-1/3 h-1/2 bg-primary/5 blur-[120px] rounded-full -z-10 opacity-40"></div>
+<div class="fixed bottom-0 left-0 w-1/4 h-1/3 bg-secondary/5 blur-[100px] rounded-full -z-10 opacity-30"></div>
+<script>
+    let apiBaseUrl = '';
+    let adminKey = '';
+    let connected = false;
+    let sessions = {};       // session_id -> [{timestamp, user_message, ai_response}, ...]
+    let selectedSession = null;
+    let dashSessionId = 'dash_' + Math.random().toString(36).slice(2, 10);
+    let humanModeSessions = {}; // session_id -> {channel, contact}
+
+    async function loadState(){
+        try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
+        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
+            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
+        }
+        document.getElementById('apiUrlInput').value = apiBaseUrl;
+        try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
+        document.getElementById('adminKeyInput').value = adminKey;
+    }
+    async function saveApiUrl(){ try{ localStorage.setItem('nativacareApiBaseUrl', apiBaseUrl); }catch(e){} }
+    async function saveAdminKey(){ try{ localStorage.setItem('nativacareAdminKey', adminKey); }catch(e){} }
+    function adminHeaders(){ return adminKey ? {'X-Admin-Key': adminKey} : {}; }
+
+    function setStatus(state){
+        const dot = document.getElementById('convStatusDot');
+        const text = document.getElementById('convStatusText');
+        if(state === 'live'){ dot.className='w-2 h-2 rounded-full bg-sage-light animate-pulse'; text.textContent='Connected'; }
+        else if(state === 'error'){ dot.className='w-2 h-2 rounded-full bg-error'; text.textContent="Couldn't reach API"; }
+        else { dot.className='w-2 h-2 rounded-full bg-outline-variant'; text.textContent='Not connected'; }
+    }
+
+    function sessionChannelContact(id){
+        if(id.startsWith('whatsapp_')){
+            return {channel: 'whatsapp', contact: id.slice('whatsapp_'.length)};
+        }
+        return {channel: 'website', contact: ''};
+    }
+
+    async function fetchLogsAndAppointments(){
+        if(!apiBaseUrl){ connected = false; sessions = {}; setStatus('idle'); renderList(); renderMetrics(0); return; }
+        try{
+            const base = apiBaseUrl.replace(/\/$/, '');
+            const [logsRes, apptRes, humanRes] = await Promise.all([
+                fetch(base + '/chat-logs', {headers: adminHeaders()}), fetch(base + '/appointments', {headers: adminHeaders()}),
+                fetch(base + '/conversations/human-mode', {headers: adminHeaders()}).catch(() => null)
+            ]);
+            if(!logsRes.ok) throw new Error('HTTP ' + logsRes.status);
+            const logsData = await logsRes.json();
+            const apptData = apptRes.ok ? await apptRes.json() : {appointments:[]};
+            sessions = {};
+            (logsData.chat_logs || []).forEach(turn => {
+                (sessions[turn.session_id] = sessions[turn.session_id] || []).push(turn);
+            });
+            humanModeSessions = {};
+            if(humanRes && humanRes.ok){
+                const humanData = await humanRes.json();
+                (humanData.conversations || []).forEach(c => {
+                    humanModeSessions[c.session_id] = {channel: c.channel, contact: c.contact};
+                });
+            }
+            connected = true; setStatus('live');
+            renderList();
+            renderMetrics((apptData.appointments || []).length);
+            if(selectedSession && sessions[selectedSession]) selectSession(selectedSession);
+            else if(selectedSession) updateTakeoverUI();
+        }catch(e){
+            connected = false; setStatus('error');
+            console.error('Could not reach chat-logs/appointments:', e);
+            renderList();
+        }
+    }
+
+    function renderMetrics(bookingCount){
+        document.getElementById('metricConvos').textContent = Object.keys(sessions).length;
+        document.getElementById('metricBookings').textContent = bookingCount;
+    }
+
+    function renderList(){
+        const list = document.getElementById('conversationList');
+        if(!apiBaseUrl){
+            list.innerHTML = '<p class="p-4 text-label-sm text-on-surface-variant">Connect your backend above to load real conversations from <code>/chat-logs</code>.</p>';
+            return;
+        }
+        if(!connected){
+            list.innerHTML = '<p class="p-4 text-label-sm text-error">Could not reach ' + apiBaseUrl + '.</p>';
+            return;
+        }
+        const ids = Object.keys(sessions);
+        if(!ids.length){
+            list.innerHTML = '<p class="p-4 text-label-sm text-on-surface-variant">No conversations yet — they\'ll appear here once someone chats with the bot.</p>';
+            return;
+        }
+        list.innerHTML = ids.map(id => {
+            const turns = sessions[id];
+            const last = turns[turns.length - 1];
+            const active = id === selectedSession;
+            const inHumanMode = !!humanModeSessions[id];
+            return `<div class="p-4 border-b border-surface-border cursor-pointer transition-colors ${active ? 'bg-secondary-container/20 border-l-4 border-primary' : 'hover:bg-surface-container-low'}" onclick="selectSession('${id}')">
+                <div class="flex justify-between items-start mb-1">
+                    <span class="font-label-md font-bold text-on-surface">${id.slice(0, 18)}</span>
+                    <span class="text-[10px] text-on-surface-variant opacity-60">${(last.timestamp||'').slice(5,16)}</span>
+                </div>
+                <p class="text-label-sm text-on-surface-variant line-clamp-1 mb-2">${(last.user_message||'').slice(0,60)}</p>
+                <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded-full bg-secondary/10 text-secondary text-[10px] font-bold uppercase tracking-tighter">${turns.length} message${turns.length>1?'s':''}</span>
+                ${inHumanMode ? '<span class="px-2 py-0.5 rounded-full bg-error text-white text-[10px] font-bold uppercase tracking-tighter">Staff active</span>' : ''}
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function selectSession(id){
+        selectedSession = id;
+        renderList();
+        const turns = sessions[id] || [];
+        document.getElementById('chatHeaderName').textContent = id;
+        document.getElementById('chatHeaderSub').textContent = turns.length + ' message(s) in this session';
+        document.getElementById('chatAvatarLetter').textContent = id.charAt(0).toUpperCase();
+        const body = document.getElementById('chatBody');
+        body.innerHTML = turns.map(t => `
+            <div class="flex justify-end"><div class="max-w-[70%] px-4 py-3 bg-[#D37C5A] text-white rounded-2xl rounded-tr-none shadow-sm font-label-md">${escapeHtml(t.user_message)}</div></div>
+            <div class="flex justify-start"><div class="max-w-[80%] flex flex-col gap-1">
+                <div class="px-5 py-4 bg-secondary-container/40 border border-secondary-container text-on-surface-variant rounded-2xl rounded-tl-none shadow-sm font-label-md relative">
+                    <div class="absolute -top-3 left-0 px-2 py-0.5 bg-primary text-white text-[9px] font-bold rounded-md uppercase tracking-wider">${t.user_message === '[staff]' ? 'Staff' : 'AI Assistant'}</div>
+                    ${escapeHtml(t.ai_response)}
+                </div>
+                <span class="text-[10px] text-on-surface-variant px-2">${t.timestamp || ''}</span>
+            </div></div>
+        `).join('');
+        body.scrollTop = body.scrollHeight;
+        document.getElementById('takeoverBtn').classList.remove('hidden');
+        document.getElementById('takeoverBtn').classList.add('flex');
+        updateTakeoverUI();
+    }
+
+    function updateTakeoverUI(){
+        const inHumanMode = !!humanModeSessions[selectedSession];
+        const btn = document.getElementById('takeoverBtn');
+        const icon = document.getElementById('takeoverIcon');
+        const label = document.getElementById('takeoverLabel');
+        const banner = document.getElementById('takeoverBanner');
+        const input = document.getElementById('chatSendInput');
+        const hint = document.getElementById('chatFooterHint');
+        if(inHumanMode){
+            btn.className = 'flex items-center gap-2 px-4 py-2 rounded-full text-label-sm font-bold transition-all bg-error text-white';
+            icon.textContent = 'smart_toy';
+            label.textContent = 'Hand back to bot';
+            banner.classList.remove('hidden');
+            input.placeholder = 'Reply to the patient as staff…';
+            hint.innerHTML = 'Press Enter to send — this goes straight to the patient. For emergencies call <span class="text-error font-bold">998</span>.';
+        } else {
+            btn.className = 'flex items-center gap-2 px-4 py-2 rounded-full text-label-sm font-bold transition-all bg-surface-container-low text-on-surface-variant hover:bg-surface-container';
+            icon.textContent = 'support_agent';
+            label.textContent = 'Take over';
+            banner.classList.add('hidden');
+            input.placeholder = 'Type a message as a patient would…';
+            hint.innerHTML = 'Press Enter to send (this simulates a patient message, for testing). For emergencies call <span class="text-error font-bold">998</span>.';
+        }
+    }
+
+    async function toggleTakeover(){
+        if(!selectedSession || !apiBaseUrl) return;
+        const base = apiBaseUrl.replace(/\/$/, '');
+        const turningOn = !humanModeSessions[selectedSession];
+        const {channel, contact} = sessionChannelContact(selectedSession);
+        try{
+            const res = await fetch(base + '/conversations/' + encodeURIComponent(selectedSession) + '/takeover', {
+                method: 'POST', headers: {'Content-Type':'application/json', ...adminHeaders()},
+                body: JSON.stringify({enabled: turningOn, channel, contact})
+            });
+            if(!res.ok) throw new Error('HTTP ' + res.status);
+            if(turningOn){ humanModeSessions[selectedSession] = {channel, contact}; }
+            else { delete humanModeSessions[selectedSession]; }
+            renderList();
+            updateTakeoverUI();
+        }catch(e){
+            alert('Could not update takeover status: ' + e.message);
+        }
+    }
+
+    function escapeHtml(s){ const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+    async function sendLiveMessage(){
+        const input = document.getElementById('chatSendInput');
+        const text = input.value.trim();
+        if(!text || !apiBaseUrl) { if(!apiBaseUrl) alert('Connect a backend first.'); return; }
+        input.value = '';
+
+        if(selectedSession && humanModeSessions[selectedSession]){
+            try{
+                const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/conversations/' + encodeURIComponent(selectedSession) + '/reply', {
+                    method:'POST', headers:{'Content-Type':'application/json', ...adminHeaders()},
+                    body: JSON.stringify({message: text})
+                });
+                const data = await res.json();
+                sessions[selectedSession] = sessions[selectedSession] || [];
+                sessions[selectedSession].push({timestamp: new Date().toISOString().slice(0,16).replace('T',' '), session_id: selectedSession, user_message: '[staff]', ai_response: text});
+                selectSession(selectedSession);
+            }catch(e){
+                alert('Could not send staff reply: ' + e.message);
+            }
+            return;
+        }
+
+        if(!selectedSession){ selectedSession = dashSessionId; sessions[selectedSession] = sessions[selectedSession] || []; }
+        try{
+            const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/chat', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({session_id: selectedSession, message: text, source:'website'})
+            });
+            if(!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            sessions[selectedSession].push({timestamp: new Date().toISOString().slice(0,16).replace('T',' '), session_id: selectedSession, user_message: text, ai_response: data.reply || '(no reply field in response)'});
+            selectSession(selectedSession);
+            renderList();
+        }catch(e){
+            alert('Could not reach /chat: ' + e.message);
+        }
+    }
+
+    document.getElementById('chatSendBtn').addEventListener('click', sendLiveMessage);
+    document.getElementById('chatSendInput').addEventListener('keydown', e => { if(e.key === 'Enter') sendLiveMessage(); });
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+        adminKey = document.getElementById('adminKeyInput').value.trim();
+        await saveApiUrl();
+        await saveAdminKey();
+        await fetchLogsAndAppointments();
+    });
+    document.getElementById('refreshBtn').addEventListener('click', fetchLogsAndAppointments);
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        apiBaseUrl = ''; adminKey = '';
+        try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
+        document.getElementById('apiUrlInput').value = '';
+        document.getElementById('adminKeyInput').value = '';
+        connected = false; sessions = {}; humanModeSessions = {}; selectedSession = null;
+        setStatus('idle'); renderList();
+    });
+
+    (async function init(){
+        await loadState();
+        if(apiBaseUrl){ await fetchLogsAndAppointments(); } else { setStatus('idle'); renderList(); }
+        setInterval(() => { if(apiBaseUrl) fetchLogsAndAppointments(); }, 15000);
+    })();
+    </script>
+</body></html>

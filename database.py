@@ -26,6 +26,7 @@ Public API (used by other modules):
 import os
 import csv
 import httpx
+import time as _time
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -52,10 +53,6 @@ else:
 # and set_session_cache(None) before returning. While set, every call to
 # _fetch_tab(tab) caches its result on that session, so repeated fetches
 # within one chat reuse the data instead of hitting Google Sheets again.
-#
-# The cache is strictly per-session: a new chat (new session_id) starts a
-# fresh cache, so the bot picks up sheet edits when the user starts a new
-# conversation. Sessions expire after their TTL, so caches don't linger.
 
 _CURRENT_CACHE: dict | None = None
 
@@ -73,6 +70,44 @@ def set_session_cache(cache_holder: dict | None):
 
 
 # ---------------------------------------------------------------------------
+# Shared cross-session cache
+# ---------------------------------------------------------------------------
+# The per-session cache above only helps WITHIN one conversation — every
+# brand new chat still started completely cold, meaning its first message
+# that happened to need a given tab (services, midwife_schedule_overrides,
+# whichever) paid a full live network round-trip to Google Sheets right
+# then, with an 8s timeout in the worst case. Since different conversations
+# need different tabs at different points, this showed up as the bot
+# randomly stalling on what looked like an arbitrary message — it wasn't
+# random at all, it was just "whichever tab this session hasn't needed
+# yet."
+#
+# This shared cache sits in front of that: the first request from ANY
+# session to need a tab fetches it once and stores it here with a
+# timestamp; every other session (and every later message in the same
+# session) reuses it until it goes stale. TTL is short enough that a sheet
+# edit still shows up within a few minutes, not instantly — reasonable
+# for catalog data like prices and schedules that don't change every
+# second.
+_SHARED_CACHE: dict[str, tuple[float, list]] = {}
+_SHARED_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _shared_cache_get(tab: str) -> list | None:
+    entry = _SHARED_CACHE.get(tab)
+    if entry is None:
+        return None
+    fetched_at, data = entry
+    if _time.time() - fetched_at > _SHARED_CACHE_TTL_SECONDS:
+        return None  # stale, treat as a miss
+    return data
+
+
+def _shared_cache_set(tab: str, data: list):
+    _SHARED_CACHE[tab] = (_time.time(), data)
+
+
+# ---------------------------------------------------------------------------
 # Low-level fetcher
 # ---------------------------------------------------------------------------
 
@@ -86,10 +121,18 @@ def _url(tab: str) -> str:
 async def _fetch_tab(tab: str) -> list:
     """Fetch one tab and parse as CSV. Returns [] on any failure.
 
-    Uses the per-session cache when one is set. Cache hits avoid the
-    network round-trip entirely."""
+    Checks the per-session cache first (fastest — no lock, no timestamp
+    math), then the shared cross-session cache (still fast, avoids the
+    network entirely for any tab another session has fetched recently),
+    and only hits the real network as a last resort."""
     if _CURRENT_CACHE is not None and tab in _CURRENT_CACHE:
         return _CURRENT_CACHE[tab]
+
+    shared = _shared_cache_get(tab)
+    if shared is not None:
+        if _CURRENT_CACHE is not None:
+            _CURRENT_CACHE[tab] = shared
+        return shared
 
     if not SHEET_ID:
         print(f"[Sheets] GOOGLE_SHEET_ID missing. Using fallback for '{tab}'.")
@@ -105,6 +148,7 @@ async def _fetch_tab(tab: str) -> list:
             print(f"[Sheets] Could not fetch '{tab}': {e}")
             result = []
 
+    _shared_cache_set(tab, result)
     if _CURRENT_CACHE is not None:
         _CURRENT_CACHE[tab] = result
     return result
@@ -122,6 +166,37 @@ def _truthy(value) -> bool:
 # Services
 # ---------------------------------------------------------------------------
 
+def _normalize_location_type(raw: str) -> str:
+    """The rest of the codebase expects one of exactly: "home", "clinic",
+    "online", "clinic_or_home", "clinic_or_online" — but the real sheet
+    has values like "home,clinic" (comma-separated, human-friendly to
+    type). Without this, a comma-separated value matches NONE of the
+    exact-string checks in ai.py, silently causing location_type to never
+    get set at all — which meant a home-visit service could complete an
+    entire booking with no address ever collected. This normalizes
+    whatever reasonable format ends up in the sheet into the canonical
+    token the booking logic actually checks against."""
+    if not raw:
+        return raw
+    parts = {p.strip().lower() for p in raw.replace("/", ",").split(",") if p.strip()}
+    if not parts:
+        return raw
+    has_home = "home" in parts
+    has_clinic = "clinic" in parts
+    has_online = "online" in parts
+    if has_home and has_clinic:
+        return "clinic_or_home"
+    if has_clinic and has_online:
+        return "clinic_or_online"
+    if has_home:
+        return "home"
+    if has_clinic:
+        return "clinic"
+    if has_online:
+        return "online"
+    return raw  # unrecognized value — pass through unchanged rather than guess
+
+
 async def get_services() -> list:
     rows = await _fetch_tab("services")
     data = [
@@ -132,14 +207,31 @@ async def get_services() -> list:
             "description": _clean(r.get("description")),
             "default_price_aed": _clean(r.get("default_price_aed")),
             "duration_minutes": _clean(r.get("duration_minutes"), 10),
-            "location_type": _clean(r.get("location_type"), 30),
-            "available": _truthy(r.get("available", "TRUE")),
+            "location_type": _normalize_location_type(_clean(r.get("location_type"), 30)),
+            "visits_required": _clean(r.get("visits_required"), 10),
+            "family_name": _clean(r.get("family_name")),
+            "variant_label": _clean(r.get("variant_label"), 40),
+            # family_name groups tier variants of the same underlying
+            # service (e.g. Nanny Training "Half Day" and "Full Day" both
+            # share family_name="Nanny Training") so the bot can show ONE
+            # line when listing services, then reveal the specific tiers
+            # (via variant_label, e.g. "Half Day") only once that family
+            # is picked. Leave both blank for a standalone service with
+            # no variants — it behaves exactly as before.
+            # For multi-visit programs (e.g. "Postnatal Recovery Program —
+            # 3 visits") — leave blank in the sheet for an ordinary
+            # single-visit service; ai.py treats missing/blank as 1.
+            # Renamed from "available" to "active" for consistency with the
+            # midwives and packages tables. If your sheet still has an
+            # "available" column, either rename it in the sheet OR both
+            # keys are checked here for a graceful transition period.
+            "active": _truthy(r.get("active", r.get("available", "TRUE"))),
             "demo_notice": _clean(r.get("demo_notice")),
         }
         for r in rows
         if _clean(r.get("service_name"))
     ]
-    services = [s for s in data if s["available"]]
+    services = [s for s in data if s["active"]]
     return services or _DEMO_SERVICES
 
 
@@ -289,15 +381,21 @@ async def get_clinic_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Appointment storage (in-memory; swap for DB later)
+# Appointment storage — persisted to SQLite via db.py (see that module for
+# schema). Previously this was a plain Python list (`_leads_store`) that
+# was wiped on every server restart/redeploy, which also meant the
+# availability engine (get_existing_bookings_for, below) could silently
+# forget real bookings and double-book a slot after a redeploy. Function
+# signatures here are unchanged so ai.py / availability.py needed no edits.
 # ---------------------------------------------------------------------------
 
-_leads_store: list[AppointmentLead] = []
+import db as _db
+_db.init_db()
 
 
 def save_appointment(lead: AppointmentLead):
     lead.created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
-    _leads_store.append(lead)
+    _db.create_appointment(lead.model_dump())
     print("\n" + "=" * 40)
     print(f"NEW NATIVACARE APPOINTMENT — {lead.patient_name}")
     print(f"Service: {lead.service_name}")
@@ -311,19 +409,15 @@ def save_appointment(lead: AppointmentLead):
 
 
 def get_saved_appointments() -> list:
-    return [l.model_dump() for l in _leads_store]
+    return _db.list_appointments()
 
 
 def get_existing_bookings_for(midwife_id: str, date: str) -> list:
-    """Return existing bookings (from this server's memory) for a given
-    midwife on a given date. Used by the availability engine to remove
-    already-booked slots."""
-    return [
-        l.model_dump() for l in _leads_store
-        if l.midwife_id == midwife_id
-        and l.appointment_date == date
-        and l.status not in ("cancelled", "rejected")
-    ]
+    """Return existing bookings for a given midwife on a given date. Used
+    by the availability engine to remove already-booked slots. Now reads
+    from SQLite instead of an in-process list, so it stays correct across
+    restarts and multiple worker processes."""
+    return _db.list_appointments_for(midwife_id, date)
 
 
 # ===========================================================================
@@ -336,37 +430,37 @@ _DEMO_SERVICES = [
     {"service_id": "S001", "service_name": "Preconception Consultation",
      "category": "Preconception", "description": "Initial consultation for couples planning pregnancy.",
      "default_price_aed": "400", "duration_minutes": "60",
-     "location_type": "clinic_or_online", "available": True,
+     "location_type": "clinic_or_online", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S002", "service_name": "My 10 Lunar Month Pregnancy",
      "category": "Pregnancy", "description": "Comprehensive pregnancy tracking and education.",
      "default_price_aed": "800", "duration_minutes": "90",
-     "location_type": "clinic_or_home", "available": True,
+     "location_type": "clinic_or_home", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S004", "service_name": "Routine Antenatal Visit",
      "category": "Pregnancy", "description": "Standard antenatal check-up.",
      "default_price_aed": "350", "duration_minutes": "45",
-     "location_type": "clinic_or_home", "available": True,
+     "location_type": "clinic_or_home", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S005", "service_name": "Hypnobirthing Class",
      "category": "Workshop", "description": "Birth preparation using hypnobirthing techniques.",
      "default_price_aed": "500", "duration_minutes": "90",
-     "location_type": "clinic", "available": True,
+     "location_type": "clinic", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S013", "service_name": "Routine Postnatal Care",
      "category": "Postnatal", "description": "Standard postnatal home visit.",
      "default_price_aed": "400", "duration_minutes": "60",
-     "location_type": "home", "available": True,
+     "location_type": "home", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S014", "service_name": "Breastfeeding Support",
      "category": "Postnatal", "description": "One-to-one breastfeeding consultation.",
      "default_price_aed": "350", "duration_minutes": "60",
-     "location_type": "home", "available": True,
+     "location_type": "home", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
     {"service_id": "S017", "service_name": "My Baby Care",
      "category": "Newborn", "description": "Newborn care education and hands-on support.",
      "default_price_aed": "400", "duration_minutes": "90",
-     "location_type": "home", "available": True,
+     "location_type": "home", "active": True,
      "demo_notice": "[DEMO] Replace with real price"},
 ]
 

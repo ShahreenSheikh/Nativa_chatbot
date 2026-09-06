@@ -99,6 +99,7 @@ def create_appointment_event(lead: dict) -> dict:
         email = lead.get("email", "")
         price = lead.get("price_aed", "")
         notes = lead.get("notes", "")
+        payment_status = lead.get("payment_status", "")
 
         # Location field: if home visit and we have an address, put it there
         location_field = ""
@@ -109,6 +110,15 @@ def create_appointment_event(lead: dict) -> dict:
         elif location_type == "online":
             location_field = "Online"
 
+        # Payment status line — only present if the bot collected payment.
+        # Flags to clinic that payment needs manual verification (until
+        # real Stripe webhook integration lands).
+        payment_line = ""
+        if payment_status == "pending_verification":
+            payment_line = "⚠️ PAYMENT: pending verification (patient reported paid via chatbot placeholder)"
+        elif payment_status == "verified":
+            payment_line = "✅ PAYMENT: verified"
+
         description_parts = [
             f"Patient: {patient_name}",
             f"Service: {service_name}",
@@ -118,6 +128,7 @@ def create_appointment_event(lead: dict) -> dict:
             f"Location: {location_type}" if location_type else "",
             f"Address: {patient_address}" if patient_address else "",
             f"Price (AED): {price}" if price else "",
+            payment_line if payment_line else "",
             f"Notes: {notes}" if notes else "",
             f"Booked via {CLINIC_NAME} chatbot",
         ]
@@ -170,3 +181,53 @@ def create_appointment_event(lead: dict) -> dict:
     except Exception as e:
         print(f"[Calendar] Error creating appointment: {e}")
         return {"status": "failed", "error": str(e)}
+
+
+def create_appointment_events(lead: dict) -> list:
+    """Create one calendar event per visit for a booking — a plain single
+    event for an ordinary booking, or one event per date for a multi-visit
+    program (see lead["additional_visits"], set by ai.py's multi-visit
+    scheduling loop). Each additional visit reuses the same patient/
+    service/midwife details from `lead`, just with its own date/time.
+
+    Returns a list of status dicts (same shape as create_appointment_event
+    returns for one event) — always at least one entry for the primary
+    visit, even if every visit fails, so callers can inspect what
+    happened per visit rather than getting a single pass/fail flag for
+    the whole program."""
+    additional = lead.get("additional_visits") or []
+    total_visits = len(additional) + 1
+
+    primary_lead = lead
+    if total_visits > 1:
+        # Tag the first event too, so all N events look consistent to
+        # staff browsing the calendar — otherwise only events 2..N
+        # mention they're part of a program and the first looks like an
+        # unrelated one-off booking.
+        primary_lead = dict(lead)
+        original_notes = primary_lead.get("notes", "")
+        primary_lead["notes"] = (
+            f"Visit 1 of {total_visits} — part of a multi-visit program."
+            + (f"\n{original_notes}" if original_notes else "")
+        )
+    statuses = [create_appointment_event(primary_lead)]
+
+    for i, visit in enumerate(additional, start=2):
+        visit_lead = dict(lead)
+        visit_lead["appointment_date"] = visit.get("date", "")
+        visit_lead["appointment_time"] = visit.get("time", "")
+        if visit.get("midwife_name"):
+            visit_lead["midwife_name"] = visit["midwife_name"]
+        if visit.get("midwife_id"):
+            visit_lead["midwife_id"] = visit["midwife_id"]
+        # Tag which visit number this is in the calendar description, so
+        # staff looking at the calendar can tell it's part of a program
+        # rather than a stray duplicate-looking booking.
+        original_notes = visit_lead.get("notes", "")
+        visit_lead["notes"] = (
+            f"Visit {i} of {total_visits} — part of a multi-visit program."
+            + (f"\n{original_notes}" if original_notes else "")
+        )
+        statuses.append(create_appointment_event(visit_lead))
+
+    return statuses

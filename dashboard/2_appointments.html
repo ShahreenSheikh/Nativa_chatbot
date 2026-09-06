@@ -1,0 +1,539 @@
+<!DOCTYPE html><html lang="en" class="light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet"><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">try{
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed-dim": "#bdcbac",
+                        "inverse-surface": "#2f3133",
+                        "tertiary-fixed-dim": "#c7c6c5",
+                        "on-primary-fixed": "#251a00",
+                        "on-error": "#ffffff",
+                        "sage-light": "#A3B096",
+                        "on-background": "#1a1c1e",
+                        "surface-container-highest": "#e2e2e5",
+                        "surface-bright": "#f9f9fc",
+                        "inverse-on-surface": "#f0f0f3",
+                        "inverse-primary": "#e7c272",
+                        "gold-muted": "#D4C294",
+                        "secondary-container": "#d9e8c7",
+                        "error-container": "#ffdad6",
+                        "on-primary-container": "#3f2e00",
+                        "surface-border": "#E5E7EB",
+                        "surface-container-high": "#e8e8ea",
+                        "secondary-fixed": "#d9e8c7",
+                        "on-secondary-container": "#5b694f",
+                        "on-surface-variant": "#4d4638",
+                        "on-secondary-fixed": "#131f0b",
+                        "primary-fixed-dim": "#e7c272",
+                        "error": "#ba1a1a",
+                        "surface-container": "#eeeef0",
+                        "outline-variant": "#d0c5b3",
+                        "on-surface": "#1a1c1e",
+                        "tertiary": "#5e5e5d",
+                        "outline": "#7f7667",
+                        "surface": "#f9f9fc",
+                        "on-primary-fixed-variant": "#5b4300",
+                        "on-tertiary-fixed-variant": "#464746",
+                        "surface-variant": "#e2e2e5",
+                        "on-tertiary-container": "#2f3130",
+                        "on-primary": "#ffffff",
+                        "tertiary-fixed": "#e3e2e0",
+                        "surface-tint": "#765a14",
+                        "chart-accent-2": "#B59449",
+                        "background": "#f9f9fc",
+                        "chart-accent-3": "#D4C294",
+                        "on-secondary-fixed-variant": "#3e4b33",
+                        "primary": "#765a14",
+                        "surface-dim": "#dadadc",
+                        "on-error-container": "#93000a",
+                        "tertiary-container": "#989897",
+                        "primary-fixed": "#ffdf9c",
+                        "secondary": "#556349",
+                        "on-tertiary-fixed": "#1a1c1b",
+                        "surface-container-low": "#f3f3f6",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "chart-accent-1": "#7D8B6F",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-container": "#b59449"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "unit": "4px",
+                        "gutter-md": "24px",
+                        "margin-page": "40px",
+                        "stack-md": "16px",
+                        "container-max": "1440px",
+                        "stack-sm": "8px",
+                        "stack-lg": "32px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Plus Jakarta Sans"],
+                        "label-md": ["Inter"],
+                        "headline-md": ["Plus Jakarta Sans"],
+                        "headline-xl": ["Plus Jakarta Sans"],
+                        "label-sm": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["32px", {"lineHeight": "1.25", "fontWeight": "600"}],
+                        "label-md": ["14px", {"lineHeight": "1.4", "letterSpacing": "0.01em", "fontWeight": "500"}],
+                        "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                        "headline-xl": ["48px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "label-sm": ["12px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                        "body-lg": ["18px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                        "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}]
+                    }
+                },
+            },
+        }
+    }catch(_e){}</script><meta charset="utf-8"></head><body class="bg-[#F9F8F6] text-on-background font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- Top Navigation Bar -->
+<header class="bg-surface/80 backdrop-blur-xl dark:bg-inverse-surface/80 sticky top-0 z-50 border-b border-surface-border dark:border-outline-variant">
+<div class="flex justify-between items-center w-full px-gutter-md h-16">
+<a href="1_dashboard.html" class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">NativaCare</a>
+<div class="flex items-center gap-3">
+<div class="text-right">
+<div class="text-xs font-bold text-on-surface">Clinic Admin</div>
+<div class="text-[10px] text-on-surface-variant">NativaCare HQ</div>
+</div>
+<div class="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center overflow-hidden border-2 border-primary/20 shrink-0">
+<span class="material-symbols-outlined text-primary text-[20px]">account_circle</span>
+</div>
+</div>
+</div>
+</header>
+<div class="flex min-h-screen">
+<!-- Side-->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-white dark:bg-inverse-surface border-r border-surface-border dark:border-outline-variant flex flex-col py-6 px-4 z-40">
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="1_dashboard.html">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="font-label-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl bg-secondary-container/50 text-on-secondary-container border-l-4 border-primary transition-all" href="2_appointments.html">
+<span class="material-symbols-outlined" data-icon="calendar_month">calendar_month</span>
+<span class="font-label-md">Appointments</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="5_patients.html">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+<span class="font-label-md">Patients</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="3_ai_chatbot_conversations.html">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+<span class="font-label-md">Conversations</span>
+</a>
+<div class="pt-4 pb-2 px-4 uppercase text-[10px] font-bold text-outline-variant tracking-widest">Business</div>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="4_payments.html">
+<span class="material-symbols-outlined" data-icon="payments">payments</span>
+<span class="font-label-md">Revenue</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-surface-border space-y-2">
+<button id="newBookingBtn" class="w-full bg-primary text-white py-3 px-4 rounded-xl font-label-md flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/10">
+<span class="material-symbols-outlined text-[20px]">add</span>
+New Booking
+</button>
+<button id="logoutBtn" class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-on-surface-variant hover:bg-error/10 hover:text-error transition-all text-label-sm font-bold">
+<span class="material-symbols-outlined text-[18px]">logout</span>
+Disconnect
+</button>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 flex flex-col pt-6 px-8 pb-12 gap-8 max-w-[1600px]">
+<!-- Dashboard Header -->
+<div class="flex justify-between items-end">
+<div>
+<h1 class="font-headline-lg text-headline-lg text-on-surface">Appointments Schedule</h1>
+<p class="text-on-surface-variant mt-1" id="apptSubtitle">Connect your backend to load real bookings.</p>
+</div>
+<div class="flex items-center gap-3 bg-white p-1 rounded-xl border border-surface-border shadow-sm">
+<button class="px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors">Day</button>
+<button class="px-4 py-2 rounded-lg font-label-md bg-secondary-container text-on-secondary-container">Week</button>
+<button class="px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors">Month</button>
+</div>
+</div>
+<!-- Backend Connection Bar -->
+<div class="bg-white p-4 rounded-2xl border border-surface-border shadow-sm flex flex-col md:flex-row md:items-center gap-3">
+<div class="flex items-center gap-2 text-on-surface-variant shrink-0">
+<span class="material-symbols-outlined text-primary" data-icon="dns">dns</span>
+<span class="font-label-md font-bold">Backend</span>
+<span class="w-2 h-2 rounded-full bg-outline-variant" id="apptStatusDot"></span>
+</div>
+<input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<input id="adminKeyInput" type="password" placeholder="Admin key (if set)" class="w-40 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<div class="flex gap-2 shrink-0">
+<button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all">Connect</button>
+<button id="refreshBtn" class="bg-surface-container-low text-on-surface-variant px-4 py-2 rounded-full text-sm font-bold hover:bg-surface-container transition-all">Refresh</button>
+</div>
+</div>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-6">
+<!-- Main Calendar (Column 1-9) -->
+<section class="col-span-9 space-y-6">
+<div class="bg-white rounded-[24px] border border-surface-border overflow-hidden shadow-sm">
+<!-- Calendar Header -->
+<div class="flex items-center justify-between px-6 py-4 border-b border-surface-border">
+<div class="flex items-center gap-4">
+<h2 class="font-headline-md text-on-surface" id="calendarMonthLabel">October 2024</h2>
+<div class="flex gap-1">
+<button class="p-1.5 rounded-lg hover:bg-surface-container transition-colors border border-surface-border">
+<span class="material-symbols-outlined text-[18px]" data-icon="chevron_left">chevron_left</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-surface-container transition-colors border border-surface-border">
+<span class="material-symbols-outlined text-[18px]" data-icon="chevron_right">chevron_right</span>
+</button>
+</div>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2">
+<span class="w-3 h-3 rounded-full bg-chart-accent-2"></span>
+<span class="text-label-sm text-on-surface-variant">Confirmed</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-3 h-3 rounded-full bg-tertiary-container"></span>
+<span class="text-label-sm text-on-surface-variant">Pending</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="w-3 h-3 rounded-full bg-error"></span>
+<span class="text-label-sm text-on-surface-variant">Cancelled</span>
+</div>
+</div>
+</div>
+<!-- Calendar Grid -->
+<div class="p-4">
+<div class="calendar-grid border-b border-surface-border pb-2">
+<div class="text-center font-label-sm text-outline py-2">MON</div>
+<div class="text-center font-label-sm text-outline py-2">TUE</div>
+<div class="text-center font-label-sm text-outline py-2">WED</div>
+<div class="text-center font-label-sm text-outline py-2">THU</div>
+<div class="text-center font-label-sm text-outline py-2">FRI</div>
+<div class="text-center font-label-sm text-outline py-2 text-primary">SAT</div>
+<div class="text-center font-label-sm text-outline py-2 text-primary">SUN</div>
+</div>
+<div class="calendar-grid min-h-[600px]" id="calendarDays">
+<!-- populated live by script at the bottom of the page -->
+</div>
+</div>
+</div>
+</section>
+<!-- Notifications & Patient Detail (Column 10-12) -->
+<aside class="col-span-3 space-y-6">
+<!-- Notifications Center -->
+<div class="bg-white rounded-[24px] border border-surface-border p-6 shadow-sm">
+<div class="flex items-center justify-between mb-4">
+<h3 class="font-headline-md text-[18px]">Alerts &amp; Follow-ups</h3>
+<span class="bg-error text-white text-[10px] px-2 py-0.5 rounded-full font-bold">3 NEW</span>
+</div>
+<div class="space-y-4">
+<div class="flex gap-3 p-3 rounded-xl bg-error-container/20 border border-error/10">
+<span class="material-symbols-outlined text-error" data-icon="priority_high">priority_high</span>
+<div>
+<p class="font-label-md text-on-surface leading-tight">High Priority: Leila T.</p>
+<p class="text-label-sm text-on-surface-variant mt-1">Pre-eclampsia risk flag. Call scheduled in 15 mins.</p>
+</div>
+</div>
+<div class="flex gap-3 p-3 rounded-xl hover:bg-surface-container-low transition-colors group cursor-pointer border border-transparent hover:border-surface-border">
+<span class="material-symbols-outlined text-gold-muted" data-icon="event_busy">event_busy</span>
+<div>
+<p class="font-label-md text-on-surface">Missed: Dana Q.</p>
+<p class="text-label-sm text-on-surface-variant mt-1">Follow-up needed for lactation support.</p>
+</div>
+</div>
+<div class="flex gap-3 p-3 rounded-xl hover:bg-surface-container-low transition-colors border border-transparent">
+<span class="material-symbols-outlined text-primary" data-icon="schedule_send">schedule_send</span>
+<div>
+<p class="font-label-md text-on-surface">Reminder Sent</p>
+<p class="text-label-sm text-on-surface-variant mt-1">Tomorrow's route for Midwife Sarah confirmed.</p>
+</div>
+</div>
+</div>
+<!-- AI Insights Mini-Card -->
+</div>
+</aside>
+</div>
+</main>
+</div>
+<!-- Patient Detail Flyout (Hidden by default) -->
+<div class="fixed right-0 top-0 h-full w-[400px] glass-panel border-l border-surface-border shadow-2xl z-[60] transform translate-x-full transition-transform duration-300 ease-out flex flex-col" id="patientSidebar">
+<div class="p-6 border-b border-surface-border flex items-center justify-between bg-white/50">
+<h2 class="font-headline-md text-on-surface">Patient Details</h2>
+<button class="p-2 rounded-full hover:bg-surface-container transition-colors" onclick="closeSidebar()">
+<span class="material-symbols-outlined" data-icon="close">close</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto p-6 space-y-8">
+<!-- Patient Profile Header -->
+<div class="flex items-center gap-4">
+<div class="w-20 h-20 rounded-2xl overflow-hidden border-2 border-primary/20 flex items-center justify-center bg-secondary-container">
+<span class="material-symbols-outlined text-primary text-4xl" data-icon="account_circle">account_circle</span>
+</div>
+<div>
+<h3 class="font-headline-md text-on-surface" id="sbClientName">—</h3>
+<p class="text-on-surface-variant font-label-md" id="sbServiceStatus">—</p>
+<span class="inline-block mt-2 px-3 py-1 bg-chart-accent-2/10 text-on-primary-container text-[11px] font-bold rounded-full" id="sbChannel">—</span>
+</div>
+</div>
+<!-- Interaction Stats -->
+<div class="grid grid-cols-2 gap-3">
+<div class="bg-white p-4 rounded-2xl border border-surface-border">
+<p class="text-label-sm text-outline mb-1">Date &amp; Time</p>
+<p class="font-label-md font-bold text-on-surface" id="sbDateTime">—</p>
+</div>
+<div class="bg-white p-4 rounded-2xl border border-surface-border">
+<p class="text-label-sm text-outline mb-1">Midwife</p>
+<p class="font-label-md font-bold text-on-surface" id="sbMidwife">—</p>
+</div>
+<div class="bg-white p-4 rounded-2xl border border-surface-border">
+<p class="text-label-sm text-outline mb-1">Phone</p>
+<p class="font-label-md font-bold text-on-surface" id="sbPhone">—</p>
+</div>
+<div class="bg-white p-4 rounded-2xl border border-surface-border">
+<p class="text-label-sm text-outline mb-1">Location</p>
+<p class="font-label-md font-bold text-on-surface" id="sbLocation">—</p>
+</div>
+</div>
+<!-- Notes Section -->
+<div class="space-y-4">
+<h4 class="font-label-md font-bold text-on-surface flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px]" data-icon="sticky_note_2">sticky_note_2</span>
+                    Notes
+                </h4>
+<div class="bg-surface-container-low p-4 rounded-2xl text-body-md text-on-surface-variant text-[14px]">
+<p class="italic" id="sbNotes">No notes on this booking.</p>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="space-y-3">
+<button class="w-full bg-primary text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-primary/20" id="sbConfirmBtn" onclick="setSidebarStatus('confirmed')">
+<span class="material-symbols-outlined" data-icon="check_circle">check_circle</span>
+                    Mark Confirmed
+                </button>
+<button class="w-full bg-white border border-error/30 text-error py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-error/5 transition-colors" id="sbCancelBtn" onclick="setSidebarStatus('cancelled')">
+<span class="material-symbols-outlined" data-icon="cancel">cancel</span>
+                    Cancel Booking
+                </button>
+</div>
+</div>
+</div>
+<!-- Background Decoration -->
+<div class="fixed bottom-0 right-0 p-12 pointer-events-none opacity-[0.03]">
+<span class="material-symbols-outlined text-[400px]" data-icon="local_hospital">local_hospital</span>
+</div>
+<script>
+        const sidebar = document.getElementById('patientSidebar');
+        let selectedBooking = null;
+
+        function openSidebar(booking) {
+            selectedBooking = booking;
+            document.getElementById('sbClientName').textContent = booking.client;
+            document.getElementById('sbServiceStatus').textContent = booking.service + ' • ' + cap(booking.status);
+            document.getElementById('sbChannel').textContent = 'via ' + cap(booking.channel);
+            document.getElementById('sbDateTime').textContent = (booking.date || 'TBD') + (booking.time ? ' at ' + booking.time : '');
+            document.getElementById('sbMidwife').textContent = booking.midwife || 'Unassigned';
+            document.getElementById('sbPhone').textContent = booking.phone || '—';
+            document.getElementById('sbLocation').textContent = booking.location || '—';
+            document.getElementById('sbNotes').textContent = booking.notes || 'No notes on this booking.';
+            sidebar.classList.remove('translate-x-full');
+        }
+        function closeSidebar() {
+            sidebar.classList.add('translate-x-full');
+        }
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSidebar(); });
+
+        async function setSidebarStatus(status){
+            if(!selectedBooking) return;
+            if(selectedBooking._origin === 'manual'){
+                selectedBooking.status = status;
+                saveManualBookings();
+                renderCalendar();
+                document.getElementById('sbServiceStatus').textContent = selectedBooking.service + ' • ' + cap(status);
+                return;
+            }
+            if(!apiBaseUrl || !selectedBooking.id){ alert('Not connected to a backend, or this booking has no id.'); return; }
+            try{
+                const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/appointments/' + encodeURIComponent(selectedBooking.id) + '/status', {
+                    method:'PATCH', headers:{'Content-Type':'application/json', ...adminHeaders()}, body: JSON.stringify({status})
+                });
+                if(!res.ok) throw new Error('HTTP ' + res.status);
+                await fetchAppointments();
+                document.getElementById('sbServiceStatus').textContent = selectedBooking.service + ' • ' + cap(status);
+            }catch(e){
+                alert('Could not update status on the backend: ' + e.message);
+            }
+        }
+
+        /* -----------------------------------------------------
+           LIVE DATA
+        ----------------------------------------------------- */
+        let apiBaseUrl = '';
+    let adminKey = '';
+        let bookings = [];
+        let manualBookings = [];
+        let connected = false;
+
+        function cap(s){ return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+        async function loadState(){
+            try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
+        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
+            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
+        }
+            document.getElementById('apiUrlInput').value = apiBaseUrl;
+        try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
+        document.getElementById('adminKeyInput').value = adminKey;
+            try{ const m = localStorage.getItem('nativacareManualBookingsAppt'); manualBookings = m ? JSON.parse(m) : []; }catch(e){ manualBookings = []; }
+        }
+        async function saveApiUrl(){ try{ localStorage.setItem('nativacareApiBaseUrl', apiBaseUrl); }catch(e){} }
+    async function saveAdminKey(){ try{ localStorage.setItem('nativacareAdminKey', adminKey); }catch(e){} }
+    function adminHeaders(){ return adminKey ? {'X-Admin-Key': adminKey} : {}; }
+        async function saveManualBookings(){ try{ localStorage.setItem('nativacareManualBookingsAppt', JSON.stringify(manualBookings)); }catch(e){} }
+
+        function mapApiBooking(a){
+            const loc = a.location_type === 'home' ? (a.patient_address || 'Home visit')
+                      : a.location_type === 'clinic' ? 'Clinic visit'
+                      : a.location_type === 'online' ? 'Online' : (a.patient_address || '—');
+            return {
+                id: a.booking_id || '',
+                client: a.patient_name || '(name not provided)',
+                service: a.service_name || 'Service',
+                midwife: a.midwife_name || '',
+                date: a.appointment_date || '',
+                time: a.appointment_time || '',
+                channel: (a.source || 'website').toLowerCase(),
+                status: (a.status || 'pending').toLowerCase(),
+                phone: a.phone || '',
+                location: loc,
+                notes: a.notes || '',
+                _origin: 'api'
+            };
+        }
+
+        function setConnDot(state){
+            const dot = document.getElementById('apptStatusDot');
+            dot.className = 'w-2 h-2 rounded-full ' + (state==='live' ? 'bg-chart-accent-1' : state==='error' ? 'bg-error' : 'bg-outline-variant');
+        }
+
+        async function fetchAppointments(){
+            if(!apiBaseUrl){ connected = false; bookings = []; setConnDot('idle'); renderCalendar(); return; }
+            try{
+                const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/appointments', {headers: adminHeaders()});
+                if(!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                bookings = (data.appointments || []).map(mapApiBooking);
+                connected = true; setConnDot('live');
+            }catch(e){
+                connected = false; setConnDot('error');
+                console.error('Could not reach /appointments:', e);
+            }
+            renderCalendar();
+        }
+
+        function allBookings(){ return [...bookings, ...manualBookings]; }
+
+        const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+        function renderCalendar(){
+            const today = new Date();
+            const year = today.getFullYear(), month = today.getMonth();
+            document.getElementById('calendarMonthLabel').textContent = MONTH_NAMES[month] + ' ' + year;
+
+            const all = allBookings();
+            const todayStr = today.toISOString().slice(0,10);
+            const todaysCount = all.filter(b => b.date === todayStr).length;
+
+            if(!apiBaseUrl){
+                document.getElementById('apptSubtitle').textContent = 'Not connected — showing manual entries only.';
+            } else if(!connected){
+                document.getElementById('apptSubtitle').textContent = "Couldn't reach " + apiBaseUrl + ' — showing manual entries only.';
+            } else {
+                document.getElementById('apptSubtitle').textContent = 'Managing ' + todaysCount + ' booking(s) for today across Abu Dhabi.';
+            }
+
+            // Group bookings by date (YYYY-MM-DD)
+            const byDate = {};
+            all.forEach(b => { if(b.date){ (byDate[b.date] = byDate[b.date] || []).push(b); } });
+
+            const firstOfMonth = new Date(year, month, 1);
+            const startOffset = (firstOfMonth.getDay() + 6) % 7; // Monday = 0
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+            const statusColor = { confirmed:'chart-accent-2', pending:'tertiary-container', cancelled:'error' };
+            const grid = document.getElementById('calendarDays');
+            let html = '';
+
+            for(let i = 0; i < startOffset; i++){
+                const d = daysInPrevMonth - startOffset + i + 1;
+                html += `<div class="border-r border-b border-surface-border p-3 opacity-30 min-h-[120px]"><span class="font-label-md">${d}</span></div>`;
+            }
+            for(let d = 1; d <= daysInMonth; d++){
+                const dateStr = year + '-' + String(month+1).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+                const isToday = dateStr === todayStr;
+                const dayBookings = byDate[dateStr] || [];
+                const cellClasses = 'border-r border-b border-surface-border p-3 min-h-[120px] transition-colors ' +
+                    (isToday ? 'bg-primary-container/5 ring-2 ring-primary ring-inset rounded-lg z-10' : 'hover:bg-surface-container-lowest');
+                let cards = dayBookings.map((b, idx) => {
+                    const color = statusColor[b.status] || 'tertiary-container';
+                    const bIndex = all.indexOf(b);
+                    return `<div class="appointment-card bg-${color}/10 p-2 rounded-lg text-[11px] font-medium border-l-4 border-${color} truncate cursor-pointer" onclick="openSidebar(allBookings()[${bIndex}])">${b.client} • ${b.service}</div>`;
+                }).join('');
+                html += `<div class="${cellClasses}">
+                    <span class="font-label-md ${isToday ? 'text-primary font-bold' : ''}">${String(d).padStart(2,'0')}</span>
+                    <div class="mt-2 space-y-1">${cards}</div>
+                </div>`;
+            }
+            const totalCells = startOffset + daysInMonth;
+            const trailing = (7 - (totalCells % 7)) % 7;
+            for(let d = 1; d <= trailing; d++){
+                html += `<div class="border-r border-b border-surface-border p-3 opacity-30 min-h-[120px]"><span class="font-label-md">${d}</span></div>`;
+            }
+            grid.innerHTML = html;
+        }
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+            adminKey = document.getElementById('adminKeyInput').value.trim();
+            await saveApiUrl();
+            await saveAdminKey();
+            await fetchAppointments();
+        });
+        document.getElementById('refreshBtn').addEventListener('click', fetchAppointments);
+        document.getElementById('logoutBtn').addEventListener('click', () => {
+            apiBaseUrl = ''; adminKey = '';
+            try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
+            document.getElementById('apiUrlInput').value = '';
+            document.getElementById('adminKeyInput').value = '';
+            connected = false; bookings = [];
+            setConnDot('idle'); renderCalendar();
+        });
+
+        document.getElementById('newBookingBtn').addEventListener('click', async () => {
+            const client = prompt("Client name?"); if(!client) return;
+            const service = prompt("Service? (e.g. Postnatal Recovery)") || 'Service';
+            const date = prompt("Date? (YYYY-MM-DD)") || '';
+            const time = prompt("Time? (e.g. 10:00)") || '';
+            manualBookings.push({
+                id: 'local-' + Date.now(), client, service, midwife:'', date, time,
+                channel:'phone', status:'pending', phone:'', location:'', notes:'Added manually from dashboard.',
+                _origin:'manual'
+            });
+            await saveManualBookings();
+            renderCalendar();
+        });
+
+        (async function init(){
+            await loadState();
+            if(apiBaseUrl){ await fetchAppointments(); } else { setConnDot('idle'); renderCalendar(); }
+        })();
+    </script>
+
+</body></html>

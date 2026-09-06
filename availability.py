@@ -436,8 +436,7 @@ def format_slots_human(day: DayAvailability, max_lines: int = 30) -> str:
 
     lines = [header]
     for t in times[:max_lines]:
-        names = ", ".join(sorted(set(by_start[t])))
-        lines.append(f"- {t} with {names}")
+        lines.append(f"- {t}")
     if len(times) > max_lines:
         lines.append(f"... and {len(times) - max_lines} more. Ask for more times if needed.")
     return "\n".join(lines)

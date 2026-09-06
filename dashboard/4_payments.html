@@ -1,0 +1,401 @@
+<!DOCTYPE html><html lang="en" class="light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet"><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">try{
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed-dim": "#bdcbac",
+                        "inverse-surface": "#2f3133",
+                        "tertiary-fixed-dim": "#c7c6c5",
+                        "on-primary-fixed": "#251a00",
+                        "on-error": "#ffffff",
+                        "sage-light": "#A3B096",
+                        "on-background": "#1a1c1e",
+                        "surface-container-highest": "#e2e2e5",
+                        "surface-bright": "#f9f9fc",
+                        "inverse-on-surface": "#f0f0f3",
+                        "inverse-primary": "#e7c272",
+                        "gold-muted": "#D4C294",
+                        "secondary-container": "#d9e8c7",
+                        "error-container": "#ffdad6",
+                        "on-primary-container": "#3f2e00",
+                        "surface-border": "#E5E7EB",
+                        "surface-container-high": "#e8e8ea",
+                        "secondary-fixed": "#d9e8c7",
+                        "on-secondary-container": "#5b694f",
+                        "on-surface-variant": "#4d4638",
+                        "on-secondary-fixed": "#131f0b",
+                        "primary-fixed-dim": "#e7c272",
+                        "error": "#ba1a1a",
+                        "surface-container": "#eeeef0",
+                        "outline-variant": "#d0c5b3",
+                        "on-surface": "#1a1c1e",
+                        "tertiary": "#5e5e5d",
+                        "outline": "#7f7667",
+                        "surface": "#f9f9fc",
+                        "on-primary-fixed-variant": "#5b4300",
+                        "on-tertiary-fixed-variant": "#464746",
+                        "surface-variant": "#e2e2e5",
+                        "on-tertiary-container": "#2f3130",
+                        "on-primary": "#ffffff",
+                        "tertiary-fixed": "#e3e2e0",
+                        "surface-tint": "#765a14",
+                        "chart-accent-2": "#B59449",
+                        "background": "#f9f9fc",
+                        "chart-accent-3": "#D4C294",
+                        "on-secondary-fixed-variant": "#3e4b33",
+                        "primary": "#765a14",
+                        "surface-dim": "#dadadc",
+                        "on-error-container": "#93000a",
+                        "tertiary-container": "#989897",
+                        "primary-fixed": "#ffdf9c",
+                        "secondary": "#556349",
+                        "on-tertiary-fixed": "#1a1c1b",
+                        "surface-container-low": "#f3f3f6",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "chart-accent-1": "#7D8B6F",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-container": "#b59449"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "unit": "4px",
+                        "gutter-md": "24px",
+                        "margin-page": "40px",
+                        "stack-md": "16px",
+                        "container-max": "1440px",
+                        "stack-sm": "8px",
+                        "stack-lg": "32px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Plus Jakarta Sans"],
+                        "label-md": ["Inter"],
+                        "headline-md": ["Plus Jakarta Sans"],
+                        "headline-xl": ["Plus Jakarta Sans"],
+                        "label-sm": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["32px", {"lineHeight": "1.25", "fontWeight": "600"}],
+                        "label-md": ["14px", {"lineHeight": "1.4", "letterSpacing": "0.01em", "fontWeight": "500"}],
+                        "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                        "headline-xl": ["48px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "label-sm": ["12px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                        "body-lg": ["18px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                        "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}]
+                    }
+                },
+            },
+        }
+    }catch(_e){}</script><meta charset="utf-8"></head><body class="bg-[#F9F8F6] text-on-background font-body-md selection:bg-primary-fixed selection:text-on-primary-fixed">
+<!-- Top Navigation Bar -->
+<header class="bg-surface/80 backdrop-blur-xl dark:bg-inverse-surface/80 sticky top-0 z-50 border-b border-surface-border dark:border-outline-variant">
+<div class="flex justify-between items-center w-full px-gutter-md h-16">
+<a href="1_dashboard.html" class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">NativaCare</a>
+<div class="flex items-center gap-3">
+<div class="text-right">
+<div class="text-xs font-bold text-on-surface">Clinic Admin</div>
+<div class="text-[10px] text-on-surface-variant">NativaCare HQ</div>
+</div>
+<div class="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center overflow-hidden border-2 border-primary/20 shrink-0">
+<span class="material-symbols-outlined text-primary text-[20px]">account_circle</span>
+</div>
+</div>
+</div>
+</header>
+<div class="flex min-h-screen">
+<!-- Side-->
+<aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-white dark:bg-inverse-surface border-r border-surface-border dark:border-outline-variant flex flex-col py-6 px-4 z-40">
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="1_dashboard.html">
+<span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+<span class="font-label-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="2_appointments.html">
+<span class="material-symbols-outlined" data-icon="calendar_month">calendar_month</span>
+<span class="font-label-md">Appointments</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="5_patients.html">
+<span class="material-symbols-outlined" data-icon="group">group</span>
+<span class="font-label-md">Patients</span>
+</a>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="3_ai_chatbot_conversations.html">
+<span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+<span class="font-label-md">Conversations</span>
+</a>
+<div class="pt-4 pb-2 px-4 uppercase text-[10px] font-bold text-outline-variant tracking-widest">Business</div>
+<a class="flex items-center gap-3 px-4 py-3 rounded-xl bg-secondary-container/50 text-on-secondary-container border-l-4 border-primary transition-all" href="4_payments.html">
+<span class="material-symbols-outlined" data-icon="payments">payments</span>
+<span class="font-label-md">Revenue</span>
+</a>
+</nav>
+<div class="mt-auto pt-6 border-t border-surface-border space-y-2">
+<a href="2_appointments.html" class="w-full bg-primary text-white py-3 px-4 rounded-xl font-label-md flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/10">
+<span class="material-symbols-outlined text-[20px]">add</span>
+New Booking
+</a>
+<button id="logoutBtn" class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-on-surface-variant hover:bg-error/10 hover:text-error transition-all text-label-sm font-bold">
+<span class="material-symbols-outlined text-[18px]">logout</span>
+Disconnect
+</button>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 flex flex-col pt-6 px-8 pb-12 gap-8 max-w-[1600px]">
+<div class="flex justify-between items-end">
+<div>
+<h1 class="font-headline-lg text-headline-lg text-on-surface">Payments</h1>
+<p class="text-on-surface-variant mt-1" id="paySubtitle">Connect your backend to review payment screenshots.</p>
+</div>
+</div>
+<!-- Backend Connection Bar -->
+<div class="bg-white p-4 rounded-2xl border border-surface-border shadow-sm flex flex-col md:flex-row md:items-center gap-3">
+<div class="flex items-center gap-2 text-on-surface-variant shrink-0">
+<span class="material-symbols-outlined text-primary" data-icon="dns">dns</span>
+<span class="font-label-md font-bold">Backend</span>
+<span class="w-2 h-2 rounded-full bg-outline-variant" id="payStatusDot"></span>
+</div>
+<input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<input id="adminKeyInput" type="password" placeholder="Admin key (if set)" class="w-40 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<div class="flex gap-2 shrink-0">
+<button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all">Connect</button>
+<button id="refreshBtn" class="bg-surface-container-low text-on-surface-variant px-4 py-2 rounded-full text-sm font-bold hover:bg-surface-container transition-all">Refresh</button>
+</div>
+</div>
+<!-- Status filter tabs -->
+<div class="flex items-center gap-2 bg-white p-1 rounded-xl border border-surface-border shadow-sm w-fit">
+<button class="filter-tab px-4 py-2 rounded-lg font-label-md bg-secondary-container text-on-secondary-container" data-status="">All</button>
+<button class="filter-tab px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors" data-status="submitted">Awaiting review</button>
+<button class="filter-tab px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors" data-status="pending_proof">Awaiting patient</button>
+<button class="filter-tab px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors" data-status="approved">Approved</button>
+<button class="filter-tab px-4 py-2 rounded-lg font-label-md text-on-surface-variant hover:bg-surface-container transition-colors" data-status="rejected">Rejected</button>
+</div>
+<!-- Invoice cards -->
+<div id="invoiceList" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+<p class="text-label-sm text-on-surface-variant">Connect a backend to load invoices.</p>
+</div>
+</main>
+</div>
+<!-- Screenshot lightbox -->
+<div id="lightbox" class="fixed inset-0 bg-black/70 z-[100] hidden items-center justify-center p-8" onclick="closeLightbox(event)">
+<img id="lightboxImg" src="" class="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl" alt="Payment screenshot">
+</div>
+
+<script>
+    let apiBaseUrl = '';
+    let adminKey = '';
+    let invoices = [];
+    let activeFilter = '';
+
+    async function loadState(){
+        try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
+        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
+            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
+        }
+        document.getElementById('apiUrlInput').value = apiBaseUrl;
+        try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
+        document.getElementById('adminKeyInput').value = adminKey;
+    }
+    async function saveApiUrl(){ try{ localStorage.setItem('nativacareApiBaseUrl', apiBaseUrl); }catch(e){} }
+    async function saveAdminKey(){ try{ localStorage.setItem('nativacareAdminKey', adminKey); }catch(e){} }
+    function adminHeaders(){ return adminKey ? {'X-Admin-Key': adminKey} : {}; }
+
+    function setStatusDot(state){
+        const dot = document.getElementById('payStatusDot');
+        dot.className = 'w-2 h-2 rounded-full ' + (state === 'ok' ? 'bg-secondary' : state === 'error' ? 'bg-error' : 'bg-outline-variant');
+    }
+
+    function statusBadge(status){
+        const map = {
+            pending_proof: ['Awaiting patient', 'bg-surface-container-high text-on-surface-variant'],
+            submitted:     ['Awaiting review', 'bg-gold-muted/30 text-on-surface'],
+            approved:      ['Approved', 'bg-secondary-container text-on-secondary-container'],
+            rejected:      ['Rejected', 'bg-error-container text-error'],
+        };
+        const [label, cls] = map[status] || [status, 'bg-surface-container text-on-surface-variant'];
+        return `<span class="text-[11px] font-bold px-2.5 py-1 rounded-full ${cls}">${label}</span>`;
+    }
+
+    function fileUrl(path){
+        if(!path) return '';
+        return path.startsWith('http') ? path : (apiBaseUrl.replace(/\/$/, '') + path);
+    }
+
+    function formatDateTime(raw){
+        if(!raw) return '—';
+        // Backend stores these as plain UTC strings like "2026-09-05 03:15:00"
+        // (no timezone marker) — treat as UTC explicitly, then show in
+        // whichever timezone the person viewing the dashboard is actually in.
+        const iso = raw.replace(' ', 'T') + (raw.endsWith('Z') ? '' : 'Z');
+        const d = new Date(iso);
+        if(isNaN(d.getTime())) return raw;
+        return d.toLocaleString(undefined, {
+            month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+        });
+    }
+
+    function invoiceCard(inv){
+        const lead = inv.lead || {};
+        const proofs = inv.proofs || [];
+        const latestProof = proofs[0];
+        const isImage = latestProof && /\.(png|jpe?g|webp|heic)$/i.test(latestProof.file_path || '');
+        const canDecide = inv.status === 'submitted';
+
+        return `
+        <div class="bg-white rounded-[20px] border border-surface-border shadow-sm overflow-hidden flex flex-col">
+            <div class="p-4 flex items-start justify-between gap-2 border-b border-surface-border">
+                <div>
+                    <p class="font-label-md font-bold text-on-surface">${lead.patient_name || inv.patient_name || 'Unknown patient'}</p>
+                    <p class="text-label-sm text-on-surface-variant mt-0.5">${lead.service_name || '—'}</p>
+                </div>
+                ${statusBadge(inv.status)}
+            </div>
+            <div class="p-4 space-y-2 flex-1">
+                <div class="flex justify-between text-label-sm"><span class="text-on-surface-variant">Amount</span><span class="font-bold">AED ${inv.amount_aed || '—'}</span></div>
+                <div class="flex justify-between text-label-sm"><span class="text-on-surface-variant">Reference</span><span class="font-mono">${inv.reference}</span></div>
+                <div class="flex justify-between text-label-sm"><span class="text-on-surface-variant">Channel</span><span>${inv.channel}${inv.contact ? ' · ' + inv.contact : ''}</span></div>
+                <div class="flex justify-between text-label-sm"><span class="text-on-surface-variant">Requested</span><span>${formatDateTime(inv.created_at)}</span></div>
+                ${latestProof ? `<div class="flex justify-between text-label-sm"><span class="text-on-surface-variant">Screenshot sent</span><span>${formatDateTime(latestProof.created_at)}</span></div>` : ''}
+                ${inv.status === 'rejected' && inv.reject_reason ? `<div class="text-label-sm text-error mt-1">Reason: ${inv.reject_reason}</div>` : ''}
+            </div>
+            ${latestProof ? `
+            <div class="px-4 pb-3">
+                ${isImage
+                    ? `<img src="${fileUrl(latestProof.file_path)}" class="w-full h-36 object-cover rounded-lg border border-surface-border cursor-pointer" onclick="openLightbox('${fileUrl(latestProof.file_path)}')">`
+                    : `<a href="${fileUrl(latestProof.file_path)}" target="_blank" class="text-primary text-label-sm underline">View uploaded proof</a>`}
+            </div>` : `<div class="px-4 pb-3 text-label-sm text-on-surface-variant italic">No screenshot uploaded yet.</div>`}
+            ${canDecide ? `
+            <div class="p-4 pt-0 flex gap-2">
+                <button class="flex-1 bg-primary text-white py-2 rounded-xl text-label-sm font-bold hover:opacity-90 transition-all" onclick="approveInvoice(${inv.id})">Approve</button>
+                <button class="flex-1 bg-error-container text-error py-2 rounded-xl text-label-sm font-bold hover:opacity-90 transition-all" onclick="rejectInvoice(${inv.id})">Reject</button>
+            </div>` : ''}
+        </div>`;
+    }
+
+    function renderInvoices(){
+        const list = document.getElementById('invoiceList');
+        if(!apiBaseUrl){
+            list.innerHTML = '<p class="text-label-sm text-on-surface-variant">Connect a backend to load invoices.</p>';
+            return;
+        }
+        const filtered = activeFilter ? invoices.filter(i => i.status === activeFilter) : invoices;
+        if(!filtered.length){
+            list.innerHTML = '<p class="text-label-sm text-on-surface-variant">No invoices in this view.</p>';
+            return;
+        }
+        list.innerHTML = filtered.map(invoiceCard).join('');
+
+        const pending = invoices.filter(i => i.status === 'submitted').length;
+        const badge = document.getElementById('sidebarPendingCount');
+        const dot = document.getElementById('pendingBadgeDot');
+        if(pending > 0){
+            badge.textContent = pending; badge.style.display = 'inline-block';
+            dot.style.display = 'block';
+        } else {
+            badge.style.display = 'none'; dot.style.display = 'none';
+        }
+    }
+
+    async function fetchInvoices(){
+        if(!apiBaseUrl){ setStatusDot('idle'); renderInvoices(); return; }
+        const base = apiBaseUrl.replace(/\/$/, '');
+        try{
+            const res = await fetch(base + '/invoices', {headers: adminHeaders()});
+            if(!res.ok) throw new Error('bad status');
+            const data = await res.json();
+            // Fetch proofs per invoice that has any (only needed for display)
+            invoices = data.invoices || [];
+            await Promise.all(invoices.map(async inv => {
+                try{
+                    const d = await fetch(base + '/invoices/' + inv.id, {headers: adminHeaders()}).then(r => r.json());
+                    inv.proofs = d.invoice.proofs || [];
+                }catch(e){ inv.proofs = []; }
+            }));
+            setStatusDot('ok');
+            document.getElementById('paySubtitle').textContent =
+                invoices.length + ' invoice' + (invoices.length === 1 ? '' : 's') + ' total.';
+        }catch(e){
+            setStatusDot('error');
+            invoices = [];
+            document.getElementById('paySubtitle').textContent = 'Could not reach ' + apiBaseUrl + '.';
+        }
+        renderInvoices();
+    }
+
+    async function approveInvoice(id){
+        if(!confirm('Approve this payment and create the appointment?')) return;
+        try{
+            const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/invoices/' + id + '/approve', {method:'POST', headers: adminHeaders()});
+            const data = await res.json();
+            if(data.status !== 'approved' && data.status !== 'already_approved'){
+                alert('Approval failed: ' + JSON.stringify(data));
+            }
+            await fetchInvoices();
+        }catch(e){ alert('Could not reach backend.'); }
+    }
+
+    async function rejectInvoice(id){
+        const reason = prompt('Reason for rejecting (shown to the patient, optional):', '') || '';
+        try{
+            await fetch(apiBaseUrl.replace(/\/$/, '') + '/invoices/' + id + '/reject', {
+                method:'POST', headers:{'Content-Type':'application/json', ...adminHeaders()},
+                body: JSON.stringify({reason}),
+            });
+            await fetchInvoices();
+        }catch(e){ alert('Could not reach backend.'); }
+    }
+
+    function openLightbox(url){
+        document.getElementById('lightboxImg').src = url;
+        document.getElementById('lightbox').classList.remove('hidden');
+        document.getElementById('lightbox').classList.add('flex');
+    }
+    function closeLightbox(){
+        document.getElementById('lightbox').classList.add('hidden');
+        document.getElementById('lightbox').classList.remove('flex');
+    }
+
+    document.querySelectorAll('.filter-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+            activeFilter = btn.dataset.status;
+            document.querySelectorAll('.filter-tab').forEach(b => {
+                b.classList.remove('bg-secondary-container', 'text-on-secondary-container');
+                b.classList.add('text-on-surface-variant');
+            });
+            btn.classList.add('bg-secondary-container', 'text-on-secondary-container');
+            btn.classList.remove('text-on-surface-variant');
+            renderInvoices();
+        });
+    });
+
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+        adminKey = document.getElementById('adminKeyInput').value.trim();
+        await saveApiUrl();
+        await saveAdminKey();
+        await fetchInvoices();
+    });
+    document.getElementById('refreshBtn').addEventListener('click', fetchInvoices);
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        apiBaseUrl = ''; adminKey = '';
+        try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
+        document.getElementById('apiUrlInput').value = '';
+        document.getElementById('adminKeyInput').value = '';
+        invoices = [];
+        setStatusDot('idle'); renderInvoices();
+    });
+
+    (async function init(){
+        await loadState();
+        if(apiBaseUrl){ await fetchInvoices(); } else { setStatusDot('idle'); renderInvoices(); }
+        setInterval(() => { if(apiBaseUrl) fetchInvoices(); }, 30000);
+    })();
+</script>
+</body></html>

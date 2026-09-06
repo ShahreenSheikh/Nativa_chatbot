@@ -3,6 +3,7 @@
 .env.local
 .env.production
 service_account.json
+[Ss]ervice_account.json
 *-credentials.json
 *.pem
 *.key
@@ -43,3 +44,11 @@ test_output/
 # Crawler state file (regenerated on each run)
 .crawler_state.json
 crawl.log
+
+# App data — invoices, appointments, payment proofs, chat sessions.
+# Contains real patient names/phones/emails/payment screenshots once
+# live. Never commit this — see NATIVACARE_DB_PATH / UPLOADS_DIR in .env
+# if you've customized either path beyond the defaults below.
+*.db
+*.db-journal
+/uploads/

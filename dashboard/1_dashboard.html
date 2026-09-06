@@ -1,0 +1,572 @@
+<!DOCTYPE html><html lang="en" class="light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=block" rel="stylesheet"><script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script><script id="tailwind-config">try{
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "secondary-fixed-dim": "#bdcbac",
+                        "inverse-surface": "#2f3133",
+                        "tertiary-fixed-dim": "#c7c6c5",
+                        "on-primary-fixed": "#251a00",
+                        "on-error": "#ffffff",
+                        "sage-light": "#A3B096",
+                        "on-background": "#1a1c1e",
+                        "surface-container-highest": "#e2e2e5",
+                        "surface-bright": "#f9f9fc",
+                        "inverse-on-surface": "#f0f0f3",
+                        "inverse-primary": "#e7c272",
+                        "gold-muted": "#D4C294",
+                        "secondary-container": "#d9e8c7",
+                        "error-container": "#ffdad6",
+                        "on-primary-container": "#3f2e00",
+                        "surface-border": "#E5E7EB",
+                        "surface-container-high": "#e8e8ea",
+                        "secondary-fixed": "#d9e8c7",
+                        "on-secondary-container": "#5b694f",
+                        "on-surface-variant": "#4d4638",
+                        "on-secondary-fixed": "#131f0b",
+                        "primary-fixed-dim": "#e7c272",
+                        "error": "#ba1a1a",
+                        "surface-container": "#eeeef0",
+                        "outline-variant": "#d0c5b3",
+                        "on-surface": "#1a1c1e",
+                        "tertiary": "#5e5e5d",
+                        "outline": "#7f7667",
+                        "surface": "#f9f9fc",
+                        "on-primary-fixed-variant": "#5b4300",
+                        "on-tertiary-fixed-variant": "#464746",
+                        "surface-variant": "#e2e2e5",
+                        "on-tertiary-container": "#2f3130",
+                        "on-primary": "#ffffff",
+                        "tertiary-fixed": "#e3e2e0",
+                        "surface-tint": "#765a14",
+                        "chart-accent-2": "#B59449",
+                        "background": "#f9f9fc",
+                        "chart-accent-3": "#D4C294",
+                        "on-secondary-fixed-variant": "#3e4b33",
+                        "primary": "#765a14",
+                        "surface-dim": "#dadadc",
+                        "on-error-container": "#93000a",
+                        "tertiary-container": "#989897",
+                        "primary-fixed": "#ffdf9c",
+                        "secondary": "#556349",
+                        "on-tertiary-fixed": "#1a1c1b",
+                        "surface-container-low": "#f3f3f6",
+                        "on-tertiary": "#ffffff",
+                        "on-secondary": "#ffffff",
+                        "chart-accent-1": "#7D8B6F",
+                        "surface-container-lowest": "#ffffff",
+                        "primary-container": "#b59449"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px",
+                        "card": "24px"
+                    },
+                    "spacing": {
+                        "unit": "4px",
+                        "gutter-md": "24px",
+                        "margin-page": "40px",
+                        "stack-md": "16px",
+                        "container-max": "1440px",
+                        "stack-sm": "8px",
+                        "stack-lg": "32px"
+                    },
+                    "fontFamily": {
+                        "headline-lg": ["Plus Jakarta Sans"],
+                        "label-md": ["Inter"],
+                        "headline-md": ["Plus Jakarta Sans"],
+                        "headline-xl": ["Plus Jakarta Sans"],
+                        "label-sm": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"]
+                    },
+                    "fontSize": {
+                        "headline-lg": ["32px", {"lineHeight": "1.25", "fontWeight": "600"}],
+                        "label-md": ["14px", {"lineHeight": "1.4", "letterSpacing": "0.01em", "fontWeight": "500"}],
+                        "headline-md": ["24px", {"lineHeight": "1.3", "fontWeight": "600"}],
+                        "headline-xl": ["48px", {"lineHeight": "1.2", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                        "label-sm": ["12px", {"lineHeight": "1.2", "fontWeight": "600"}],
+                        "body-lg": ["18px", {"lineHeight": "1.6", "fontWeight": "400"}],
+                        "body-md": ["16px", {"lineHeight": "1.5", "fontWeight": "400"}]
+                    }
+                }
+            }
+        }
+    }catch(_e){}</script></head><body class="bg-surface font-body-md text-on-background antialiased custom-scrollbar overflow-x-hidden">
+
+    <!-- Top Navigation Bar -->
+    <header class="bg-surface/80 backdrop-blur-xl dark:bg-inverse-surface/80 sticky top-0 z-50 border-b border-surface-border dark:border-outline-variant">
+    <div class="flex justify-between items-center w-full px-gutter-md h-16">
+    <a href="1_dashboard.html" class="font-headline-md text-headline-md font-bold text-primary dark:text-inverse-primary">NativaCare</a>
+    <div class="flex items-center gap-3">
+    <div class="text-right">
+    <div class="text-xs font-bold text-on-surface">Clinic Admin</div>
+    <div class="text-[10px] text-on-surface-variant">NativaCare HQ</div>
+    </div>
+    <div class="w-9 h-9 rounded-full bg-secondary-container flex items-center justify-center overflow-hidden border-2 border-primary/20 shrink-0">
+    <span class="material-symbols-outlined text-primary text-[20px]">account_circle</span>
+    </div>
+    </div>
+    </div>
+    </header>
+    <div class="flex min-h-screen">
+    <!-- SideNavBar -->
+    <aside class="fixed left-0 top-16 h-[calc(100vh-64px)] w-64 bg-white dark:bg-inverse-surface border-r border-surface-border flex flex-col py-6 px-4 z-40">
+        <nav class="flex-1 space-y-1">
+            <a class="flex items-center gap-3 px-4 py-3 rounded-xl bg-secondary-container/50 text-on-secondary-container border-l-4 border-primary transition-all" href="1_dashboard.html">
+                <span class="material-symbols-outlined" data-icon="dashboard">dashboard</span>
+                <span class="font-label-md">Dashboard</span>
+            </a>
+            <a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="2_appointments.html">
+                <span class="material-symbols-outlined" data-icon="calendar_month">calendar_month</span>
+                <span class="font-label-md">Appointments</span>
+            </a>
+            <a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="5_patients.html">
+                <span class="material-symbols-outlined" data-icon="group">group</span>
+                <span class="font-label-md">Patients</span>
+            </a>
+            <a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="3_ai_chatbot_conversations.html">
+                <span class="material-symbols-outlined" data-icon="chat_bubble">chat_bubble</span>
+                <span class="font-label-md">Conversations</span>
+            </a>
+            <div class="pt-4 pb-2 px-4 uppercase text-[10px] font-bold text-outline-variant tracking-widest">Business</div>
+            <a class="flex items-center gap-3 px-4 py-3 rounded-xl text-on-surface-variant hover:bg-surface-container-low transition-all" href="4_payments.html">
+                <span class="material-symbols-outlined" data-icon="payments">payments</span>
+                <span class="font-label-md">Revenue</span>
+            </a>
+        </nav>
+
+        <div class="mt-auto pt-6 border-t border-surface-border space-y-2">
+            <a href="2_appointments.html" class="w-full bg-primary text-white py-3 px-4 rounded-xl font-label-md flex items-center justify-center gap-2 hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-primary/10">
+                <span class="material-symbols-outlined text-[20px]">add</span>
+                New Booking
+            </a>
+            <button id="logoutBtn" class="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-on-surface-variant hover:bg-error/10 hover:text-error transition-all text-label-sm font-bold">
+                <span class="material-symbols-outlined text-[18px]">logout</span>
+                Disconnect
+            </button>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="ml-64 flex-1 flex flex-col">
+        <!-- Canvas -->
+        <div class="flex-1 p-margin-page space-y-stack-lg max-w-container-max mx-auto w-full">
+            <!-- Greeting -->
+            <div class="flex justify-between items-end">
+                <div>
+                    <h1 class="font-headline-lg text-on-surface">Welcome back, NativaCare Team</h1>
+                    <p class="text-on-surface-variant font-body-md mt-1">Here is your clinical performance and AI advisor overview for today.</p>
+                </div>
+                <div class="flex items-center gap-2 bg-secondary-container/30 px-4 py-2 rounded-full border border-secondary-container" id="systemStatusPill">
+                    <span class="relative flex h-3 w-3">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-chart-accent-1 opacity-75" id="systemStatusPing"></span>
+                        <span class="relative inline-flex rounded-full h-3 w-3 bg-chart-accent-1" id="systemStatusDot"></span>
+                    </span>
+                    <span class="text-on-secondary-container font-label-sm" id="systemStatusText">Not connected</span>
+                </div>
+            </div>
+
+            <!-- Backend Connection Bar -->
+            <div class="bg-white p-4 rounded-card border border-surface-border shadow-sm flex flex-col md:flex-row md:items-center gap-3">
+                <div class="flex items-center gap-2 text-on-surface-variant shrink-0">
+                    <span class="material-symbols-outlined text-primary" data-icon="dns">dns</span>
+                    <span class="font-label-md font-bold">Backend</span>
+                </div>
+                <input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+<input id="adminKeyInput" type="password" placeholder="Admin key (if set)" class="w-40 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
+                <div class="flex gap-2 shrink-0">
+                    <button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all">Connect</button>
+                    <button id="refreshBtn" class="bg-surface-container-low text-on-surface-variant px-4 py-2 rounded-full text-sm font-bold hover:bg-surface-container transition-all">Refresh</button>
+                </div>
+            </div>
+
+            <!-- Channels -->
+            <div class="bg-white p-4 rounded-card border border-surface-border shadow-sm flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8">
+                <span class="font-label-md font-bold text-on-surface-variant shrink-0">Channels</span>
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-chart-accent-1"></span>
+                    <span class="material-symbols-outlined text-[18px] text-on-surface-variant" data-icon="chat">chat</span>
+                    <span class="text-label-sm font-medium">Website Chat</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-secondary-container text-on-secondary-container">Live</span>
+                </div>
+                <div class="flex items-center gap-2" id="whatsappChannelRow">
+                    <span class="w-2 h-2 rounded-full bg-outline-variant" id="whatsappDot"></span>
+                    <span class="material-symbols-outlined text-[18px] text-on-surface-variant" data-icon="phone_iphone">phone_iphone</span>
+                    <span class="text-label-sm font-medium">WhatsApp</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant" id="whatsappBadge">Coming soon</span>
+                </div>
+            </div>
+
+            <!-- KPI Overview -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-gutter-md">
+                <!-- KPI Card 1 -->
+                <div class="bg-white p-6 rounded-card border border-surface-border hover:shadow-lg transition-all group cursor-pointer"><a href="2_appointments.html" class="block h-full w-full"><div class="flex justify-between items-start mb-4"><div class="p-2 bg-primary/10 rounded-lg text-primary"><span class="material-symbols-outlined" data-icon="event_note">event_note</span></div><div class="flex items-center gap-1 text-chart-accent-1 font-label-sm"><span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>+12%</div></div><div class="text-headline-md font-bold" id="kpiToday">–</div><div class="text-label-sm text-on-surface-variant uppercase tracking-tighter">Today's Bookings</div><div class="mt-4 h-8 w-full overflow-hidden"><svg class="sparkline-svg w-full h-full stroke-primary stroke-[2] fill-none" viewBox="0 0 100 20"><path d="M0,15 L10,12 L20,18 L30,5 L40,10 L50,8 L60,14 L70,3 L80,11 L90,15 L100,2"></path></svg></div></a></div>
+                <!-- KPI Card 2 -->
+                <div class="bg-white p-6 rounded-card border border-surface-border hover:shadow-lg transition-all group cursor-pointer"><a href="2_appointments.html" class="block h-full w-full"><div class="flex justify-between items-start mb-4"><div class="p-2 bg-secondary-container rounded-lg text-secondary"><span class="material-symbols-outlined" data-icon="calendar_view_week">calendar_view_week</span></div><div class="flex items-center gap-1 text-chart-accent-1 font-label-sm"><span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>+8%</div></div><div class="text-headline-md font-bold" id="kpiWeek">–</div><div class="text-label-sm text-on-surface-variant uppercase tracking-tighter">Appts This Week</div><div class="mt-4 h-8 w-full overflow-hidden"><svg class="sparkline-svg w-full h-full stroke-secondary stroke-[2] fill-none" viewBox="0 0 100 20"><path d="M0,10 L10,15 L20,5 L30,12 L40,18 L50,14 L60,10 L70,8 L80,12 L90,5 L100,8"></path></svg></div></a></div>
+                <!-- KPI Card 3 -->
+                <div class="bg-white p-6 rounded-card border border-surface-border hover:shadow-lg transition-all group cursor-pointer"><a href="4_payments.html" class="block h-full w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-chart-accent-2/10 rounded-lg text-chart-accent-2">
+                            <span class="material-symbols-outlined" data-icon="payments">payments</span>
+                        </div>
+                        <div class="flex items-center gap-1 text-chart-accent-1 font-label-sm">
+                            <span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>
+                            +24%
+                        </div>
+                    </div>
+                    <div class="text-headline-md font-bold" id="kpiRevenue">–</div>
+                    <div class="text-label-sm text-on-surface-variant uppercase tracking-tighter">Revenue This Month (AED, est.)</div>
+                    <div class="mt-4 h-8 w-full overflow-hidden">
+                        <svg viewBox="0 0 100 20" class="sparkline-svg w-full h-full stroke-chart-accent-2 stroke-[2] fill-none">
+                            <path d="M0,18 L20,15 L40,16 L60,8 L80,4 L100,2"></path>
+                        </svg>
+                    </div>
+                </a></div>
+                <!-- KPI Card 4 -->
+                <div class="bg-white p-6 rounded-card border border-surface-border hover:shadow-lg transition-all group cursor-pointer"><a href="3_ai_chatbot_conversations.html" class="block h-full w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-chart-accent-3/10 rounded-lg text-chart-accent-3">
+                            <span class="material-symbols-outlined" data-icon="person_add">person_add</span>
+                        </div>
+                        <div class="flex items-center gap-1 text-chart-accent-1 font-label-sm">
+                            <span class="material-symbols-outlined text-sm" data-icon="trending_up">trending_up</span>
+                            +15%
+                        </div>
+                    </div>
+                    <div class="text-headline-md font-bold" id="kpiChannelBookings">–</div>
+                    <div class="text-label-sm text-on-surface-variant uppercase tracking-tighter">Via Chat/WhatsApp/IG</div>
+                    <div class="mt-4 h-8 w-full overflow-hidden">
+                        <svg viewBox="0 0 100 20" class="sparkline-svg w-full h-full stroke-chart-accent-3 stroke-[2] fill-none">
+                            <path d="M0,10 L10,12 L50,2 L80,10 L100,4"></path>
+                        </svg>
+                    </div>
+                </a></div>
+                <!-- KPI Card 5 -->
+                <div class="bg-white p-6 rounded-card border border-surface-border hover:shadow-lg transition-all group cursor-pointer"><a href="3_ai_chatbot_conversations.html" class="block h-full w-full">
+                    <div class="flex justify-between items-start mb-4">
+                        <div class="p-2 bg-chart-accent-1/10 rounded-lg text-chart-accent-1">
+                            <span class="material-symbols-outlined" data-icon="reviews">reviews</span>
+                        </div>
+                        <div class="flex items-center gap-1 text-chart-accent-1 font-label-sm">
+                            <span class="material-symbols-outlined text-sm" data-icon="auto_awesome">auto_awesome</span>
+                            Perfect
+                        </div>
+                    </div>
+                    <div class="text-headline-md font-bold" id="kpiAutomatedPct">–</div>
+                    <div class="text-label-sm text-on-surface-variant uppercase tracking-tighter">Bookings Automated</div>
+                    <div class="mt-4 h-8 w-full overflow-hidden">
+                        <svg viewBox="0 0 100 20" class="sparkline-svg w-full h-full stroke-chart-accent-1 stroke-[2] fill-none">
+                            <path d="M0,5 L10,4 L20,5 L30,4 L40,5 L50,4 L60,5 L70,4 L80,5 L90,4 L100,4"></path>
+                        </svg>
+                    </div>
+                </a></div>
+            </div>
+
+            <!-- Live Activity Feed -->
+            <div class="grid grid-cols-1 gap-gutter-md">
+                <div class="bg-white p-gutter-md rounded-card border border-surface-border flex flex-col h-full shadow-sm">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="font-headline-md text-on-surface">Live Activity</h2>
+                        <span class="text-[10px] bg-secondary-container px-2 py-1 rounded-full text-secondary font-bold animate-pulse">LIVE</span>
+                    </div>
+                    <div class="space-y-6 overflow-y-auto max-h-[380px] pr-2 custom-scrollbar" id="liveActivityFeed">
+                        <p class="text-sm text-on-surface-variant">Connect your backend above to see real booking activity here.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-gutter-md">
+                <!-- Booking Analytics Area Chart -->
+                <div class="lg:col-span-2 bg-white p-gutter-md rounded-card border border-surface-border shadow-sm">
+                    <div class="flex items-center justify-between mb-8">
+                        <div>
+                            <h2 class="font-headline-md text-on-surface">Booking Sources</h2>
+                            <p class="text-xs text-on-surface-variant">Illustrative — no time-series endpoint exists yet</p>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="flex items-center gap-1">
+                                <div class="w-3 h-3 rounded-full bg-primary"></div>
+                                <span class="text-[10px] font-bold text-on-surface-variant uppercase tracking-tighter">Website</span>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <div class="w-3 h-3 rounded-full bg-chart-accent-1"></div>
+                                <span class="text-[10px] font-bold text-on-surface-variant uppercase tracking-tighter">AI Chat</span>
+                            </div>
+                            <div class="flex items-center gap-1">
+                                <div class="w-3 h-3 rounded-full bg-chart-accent-2"></div>
+                                <span class="text-[10px] font-bold text-on-surface-variant uppercase tracking-tighter">Instagram</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="h-64 w-full relative">
+                        <!-- Mock Area Chart -->
+                        <svg viewBox="0 0 1000 250" class="w-full h-full preserve-3d">
+                            <!-- Website Path -->
+                            <path d="M0,200 Q150,180 300,100 T600,50 T1000,20 L1000,250 L0,250 Z" fill="url(#grad-primary)" fill-opacity="0.2" stroke="#765a14" stroke-width="2"></path>
+                            <!-- AI Chat Path -->
+                            <path d="M0,230 Q200,210 400,150 T700,80 T1000,60 L1000,250 L0,250 Z" fill="url(#grad-sage)" fill-opacity="0.3" stroke="#7D8B6F" stroke-width="2"></path>
+                            <!-- IG Path -->
+                            <path d="M0,245 Q100,240 250,220 T500,180 T1000,120 L1000,250 L0,250 Z" fill="url(#grad-gold)" fill-opacity="0.1" stroke="#B59449" stroke-width="2"></path>
+                            
+                            <defs>
+                                <linearGradient id="grad-primary" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#765a14;stop-opacity:1"></stop>
+                                    <stop offset="100%" style="stop-color:#765a14;stop-opacity:0"></stop>
+                                </linearGradient>
+                                <linearGradient id="grad-sage" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#7D8B6F;stop-opacity:1"></stop>
+                                    <stop offset="100%" style="stop-color:#7D8B6F;stop-opacity:0"></stop>
+                                </linearGradient>
+                                <linearGradient id="grad-gold" x1="0%" y1="0%" x2="0%" y2="100%">
+                                    <stop offset="0%" style="stop-color:#B59449;stop-opacity:1"></stop>
+                                    <stop offset="100%" style="stop-color:#B59449;stop-opacity:0"></stop>
+                                </linearGradient>
+                            </defs>
+                        </svg>
+                        
+                        <div class="absolute bottom-0 left-0 right-0 flex justify-between px-2 pt-4 border-t border-surface-border text-[10px] text-on-surface-variant font-bold uppercase tracking-widest">
+                            <span class="">Week 1</span>
+                            <span class="">Week 2</span>
+                            <span class="">Week 3</span>
+                            <span class="">Week 4</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chatbot Performance Donut -->
+                <div class="bg-white p-gutter-md rounded-card border border-surface-border shadow-sm flex flex-col justify-center items-center text-center">
+                    <div class="w-full mb-6">
+                        <h2 class="font-headline-md text-on-surface">Automation Rate</h2>
+                        <p class="text-xs text-on-surface-variant">AI Resolution vs Human Handoff</p>
+                    </div>
+                    
+                    <div class="relative w-48 h-48 mb-8">
+                        <!-- Donut Chart SVG -->
+                        <svg viewBox="0 0 36 36" class="w-full h-full transform -rotate-90">
+                            <circle cx="18" cy="18" r="16" fill="transparent" stroke="#eee" stroke-width="4"></circle>
+                            <circle cx="18" cy="18" r="16" fill="transparent" stroke="#7D8B6F" stroke-width="4" stroke-dasharray="0, 100" id="automationArc"></circle>
+                        </svg>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center">
+                            <span class="text-4xl font-extrabold text-on-surface" id="automationPct">–</span>
+                            <span class="text-[10px] font-bold text-on-surface-variant uppercase">Automated</span>
+                        </div>
+                    </div>
+
+                    <div class="w-full grid grid-cols-2 gap-4 border-t border-surface-border pt-6">
+                        <div class="text-left">
+                            <div class="flex items-center gap-2 mb-1">
+                                <div class="w-2 h-2 rounded-full bg-chart-accent-1"></div>
+                                <span class="text-xs font-bold text-on-surface-variant">Booked via bot/web</span>
+                            </div>
+                            <div class="text-lg font-bold" id="automatedCount">–</div>
+                        </div>
+                        <div class="text-left">
+                            <div class="flex items-center gap-2 mb-1">
+                                <div class="w-2 h-2 rounded-full bg-error"></div>
+                                <span class="text-xs font-bold text-on-surface-variant">Booked via phone</span>
+                            </div>
+                            <div class="text-lg font-bold" id="manualCount">–</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="mt-auto bg-surface-container-lowest border-t border-surface-border px-margin-page py-6 w-full flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="text-label-sm text-secondary">
+                © 2024 NativaCare Abu Dhabi Community Midwives. All Rights Reserved.
+            </div>
+            <div class="flex gap-6">
+                <a href="#" class="text-label-sm text-on-surface-variant hover:text-primary transition-colors">Privacy Policy</a>
+                <a href="#" class="text-label-sm text-on-surface-variant hover:text-primary transition-colors">Terms of Service</a>
+                <a href="#" class="text-label-sm text-on-surface-variant hover:text-primary transition-colors">Clinical Guidelines</a>
+            </div>
+        </footer>
+    </main>
+    </div>
+
+    <script>
+    /* ---------------------------------------------------------
+       LIVE BACKEND CONNECTION — NativaCare Command Center
+    --------------------------------------------------------- */
+    let apiBaseUrl = '';
+    let adminKey = '';
+    let bookings = [];
+    let connected = false;
+
+    async function loadApiUrl(){
+        try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
+        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
+            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
+        }
+        document.getElementById('apiUrlInput').value = apiBaseUrl;
+        try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
+        document.getElementById('adminKeyInput').value = adminKey;
+    }
+    async function saveApiUrl(){ try{ localStorage.setItem('nativacareApiBaseUrl', apiBaseUrl); }catch(e){} }
+    async function saveAdminKey(){ try{ localStorage.setItem('nativacareAdminKey', adminKey); }catch(e){} }
+    function adminHeaders(){ return adminKey ? {'X-Admin-Key': adminKey} : {}; }
+
+    function mapBooking(a){
+        return {
+            id: a.booking_id || '',
+            client: a.patient_name || '(name not provided)',
+            service: a.service_name || 'Service',
+            date: a.appointment_date || '',
+            time: a.appointment_time || '',
+            channel: (a.source || 'website').toLowerCase(),
+            status: (a.status || 'pending').toLowerCase(),
+            price: parseFloat(a.price_aed) || 0,
+            createdAt: a.created_at || ''
+        };
+    }
+
+    function setStatus(state){
+        const dot = document.getElementById('systemStatusDot');
+        const ping = document.getElementById('systemStatusPing');
+        const text = document.getElementById('systemStatusText');
+        const pill = document.getElementById('systemStatusPill');
+        if(state === 'live'){
+            dot.className = 'relative inline-flex rounded-full h-3 w-3 bg-chart-accent-1';
+            ping.className = 'animate-ping absolute inline-flex h-full w-full rounded-full bg-chart-accent-1 opacity-75';
+            text.textContent = 'Connected — live data'; pill.classList.remove('border-error');
+        } else if(state === 'error'){
+            dot.className = 'relative inline-flex rounded-full h-3 w-3 bg-error';
+            ping.className = 'absolute inline-flex h-full w-full rounded-full bg-error opacity-0';
+            text.textContent = "Couldn't reach API";
+        } else {
+            dot.className = 'relative inline-flex rounded-full h-3 w-3 bg-outline-variant';
+            ping.className = 'absolute inline-flex h-full w-full rounded-full bg-outline-variant opacity-0';
+            text.textContent = 'Not connected';
+        }
+    }
+
+    async function fetchAppointments(){
+        if(!apiBaseUrl){ connected = false; bookings = []; setStatus('idle'); renderAll(); return; }
+        try{
+            const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/appointments', {headers: adminHeaders()});
+            if(!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            bookings = (data.appointments || []).map(mapBooking);
+            connected = true;
+            setStatus('live');
+        }catch(e){
+            connected = false;
+            setStatus('error');
+            console.error('Could not reach /appointments:', e);
+        }
+        renderAll();
+        fetchChannelStatus();
+    }
+
+    async function fetchChannelStatus(){
+        const dot = document.getElementById('whatsappDot');
+        const badge = document.getElementById('whatsappBadge');
+        if(!apiBaseUrl){ return; } // leave the "Coming soon" placeholder as-is
+        try{
+            const res = await fetch(apiBaseUrl.replace(/\/$/, '') + '/status');
+            if(!res.ok) throw new Error('HTTP ' + res.status);
+            const data = await res.json();
+            if(data.whatsapp && data.whatsapp.status === 'connected'){
+                dot.className = 'w-2 h-2 rounded-full bg-chart-accent-1';
+                badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-secondary-container text-on-secondary-container';
+                badge.textContent = 'Live';
+            } else {
+                dot.className = 'w-2 h-2 rounded-full bg-outline-variant';
+                badge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant';
+                badge.textContent = 'Coming soon';
+            }
+        }catch(e){
+            // Backend reachable for /appointments but /status failed for some
+            // other reason — leave the placeholder rather than guessing.
+        }
+    }
+
+    function startOfWeek(d){
+        const day = (d.getDay() + 6) % 7; // Mon = 0
+        const s = new Date(d); s.setDate(d.getDate() - day); s.setHours(0,0,0,0);
+        return s;
+    }
+    function parseD(s){ if(!s) return null; const d = new Date(s + 'T00:00:00'); return isNaN(d) ? null : d; }
+
+    function renderAll(){
+        const today = new Date(); today.setHours(0,0,0,0);
+        const weekStart = startOfWeek(today);
+        const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6);
+        const monthKey = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0');
+
+        const todays = bookings.filter(b => { const d = parseD(b.date); return d && d.getTime() === today.getTime(); });
+        const thisWeek = bookings.filter(b => { const d = parseD(b.date); return d && d >= weekStart && d <= weekEnd; });
+        const active = bookings.filter(b => b.status !== 'cancelled');
+        const thisMonthRevenue = active.filter(b => b.date && b.date.startsWith(monthKey)).reduce((s,b) => s + b.price, 0);
+
+        const automatedChannels = ['website','chatbot','whatsapp','instagram'];
+        const automatedBookings = bookings.filter(b => automatedChannels.includes(b.channel));
+        const phoneBookings = bookings.filter(b => b.channel === 'phone');
+        const socialBookings = bookings.filter(b => ['whatsapp','instagram','chatbot'].includes(b.channel));
+        const automatedPct = bookings.length ? Math.round(automatedBookings.length / bookings.length * 100) : 0;
+
+        document.getElementById('kpiToday').textContent = todays.length;
+        document.getElementById('kpiWeek').textContent = thisWeek.length;
+        document.getElementById('kpiRevenue').textContent = thisMonthRevenue ? thisMonthRevenue.toLocaleString() : '0';
+        document.getElementById('kpiChannelBookings').textContent = socialBookings.length;
+        document.getElementById('kpiAutomatedPct').textContent = bookings.length ? automatedPct + '%' : '–';
+
+        document.getElementById('automationPct').textContent = bookings.length ? automatedPct + '%' : '–';
+        document.getElementById('automationArc').setAttribute('stroke-dasharray', automatedPct + ', 100');
+        document.getElementById('automatedCount').textContent = automatedBookings.length;
+        document.getElementById('manualCount').textContent = phoneBookings.length;
+
+        const feed = document.getElementById('liveActivityFeed');
+        if(!apiBaseUrl){
+            feed.innerHTML = '<p class="text-sm text-on-surface-variant">Connect your backend above to see real booking activity here.</p>';
+        } else if(!connected){
+            feed.innerHTML = '<p class="text-sm text-error">Could not reach ' + apiBaseUrl + '. Check the URL and that the server is running.</p>';
+        } else if(!bookings.length){
+            feed.innerHTML = '<p class="text-sm text-on-surface-variant">No bookings yet — they\'ll show up here as soon as the chatbot (or dashboard) creates one.</p>';
+        } else {
+            const sorted = [...bookings].sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||'')).slice(0, 6);
+            const iconFor = c => c==='phone' ? 'call' : (c==='whatsapp' ? 'chat' : (c==='instagram' ? 'photo_camera' : 'smart_toy'));
+            feed.innerHTML = sorted.map(b => `
+                <div class="flex gap-4 relative">
+                    <div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white shrink-0 z-10">
+                        <span class="material-symbols-outlined text-sm" data-icon="${iconFor(b.channel)}">${iconFor(b.channel)}</span>
+                    </div>
+                    <div>
+                        <p class="text-sm font-bold text-on-surface">${b.client} — ${b.service}</p>
+                        <p class="text-xs text-on-surface-variant">${b.createdAt || 'time unknown'} • via ${b.channel} • ${b.status}</p>
+                    </div>
+                </div>`).join('');
+        }
+    }
+
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+        adminKey = document.getElementById('adminKeyInput').value.trim();
+        await saveApiUrl();
+        await saveAdminKey();
+        await fetchAppointments();
+    });
+    document.getElementById('refreshBtn').addEventListener('click', fetchAppointments);
+    document.getElementById('logoutBtn').addEventListener('click', () => {
+        apiBaseUrl = ''; adminKey = '';
+        try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
+        document.getElementById('apiUrlInput').value = '';
+        document.getElementById('adminKeyInput').value = '';
+        connected = false; bookings = [];
+        setStatus('idle'); renderAll();
+    });
+
+    (async function init(){
+        await loadApiUrl();
+        if(apiBaseUrl){ await fetchAppointments(); } else { setStatus('idle'); renderAll(); }
+    })();
+    </script>
+    </body></html>

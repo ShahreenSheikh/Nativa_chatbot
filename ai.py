@@ -25,6 +25,7 @@ Public API (used by main.py):
 
 import os
 import re
+import asyncio
 import json as _json
 import time as _time
 from datetime import datetime, timedelta
@@ -99,29 +100,51 @@ load_dotenv()
 _sessions: dict = {}
 SESSION_TTL_SECONDS = 60 * 60
 
-# LLM provider: Cerebras (OpenAI-compatible API).
-# Switched from Groq because Groq's Developer Tier was unavailable. Cerebras
-# offers a generous free tier (1M tokens/day, no credit card).
+# LLM provider: Cerebras Cloud (OpenAI-compatible API).
 #
-# Default model: gpt-oss-120b — Cerebras's recommended model for new
-# deployments. Llama-3.3-70b was deprecated in February 2026; Cerebras
-# recommends gpt-oss-120b as the replacement. It's a larger 120B-parameter
-# model, currently the fastest on Cerebras (~1,800 tok/s) and the most
-# affordable on their paid tier. You can override via LLM_MODEL env var.
+# Matches the working Railway deployment. Cerebras runs gpt-oss-120b at
+# ~1,800 tok/s on their wafer-scale hardware. Free tier is 1M tokens/day
+# with no credit card; paid tier is prepaid credits.
 #
-# The .env variable is still accepted as GROQ_API_KEY for backward
-# compatibility with existing deployments; new deployments should use
-# CEREBRAS_API_KEY. Either works.
-CEREBRAS_API_KEY = (os.getenv("CEREBRAS_API_KEY", "")
-                    or os.getenv("GROQ_API_KEY", ""))
+# The .env variable accepts CEREBRAS_API_KEY (preferred) or any of the
+# older names for backward compatibility. The base URL and model are
+# hardcoded to Cerebras regardless of which env var name you use.
+CEREBRAS_API_KEY = (
+    os.getenv("CEREBRAS_API_KEY", "")
+    or os.getenv("SAMBANOVA_API_KEY", "")
+    or os.getenv("GROQ_API_KEY", "")
+)
+# Kept old alias for back-compat with anywhere the code references it
+SAMBANOVA_API_KEY = CEREBRAS_API_KEY
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-oss-120b")
 CLINIC_NAME = os.getenv("CLINIC_NAME", "NativaCare")
+
+# Payment: manual bank transfer + staff-approved screenshot, not a real
+# payment gateway. When PAYMENT_ENABLED=true, the bot inserts a payment
+# step between the confirmation summary and the calendar booking commit:
+# it issues an invoice (bank details + reference code, see payments.py)
+# and the booking only commits once staff approve a submitted payment
+# screenshot from the dashboard. When PAYMENT_ENABLED=false (default),
+# the bot behaves exactly like before — booking commits on "yes" without
+# any payment step.
+PAYMENT_ENABLED = os.getenv("PAYMENT_ENABLED", "false").lower() in (
+    "true", "1", "yes", "on"
+)
 
 # Kept for backward-compat with any code that still references GROQ_MODEL
 GROQ_MODEL = LLM_MODEL
 
 client = (
-    OpenAI(api_key=CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1")
+    OpenAI(
+        api_key=CEREBRAS_API_KEY, base_url="https://api.cerebras.ai/v1",
+        # Explicit timeout — without this, the SDK's own default can leave
+        # a single request hanging far longer than our own retry logic
+        # assumes (call_llm_with_retry is designed around each attempt
+        # failing fast, not hanging silently). max_retries=0 because we
+        # already have our own retry-with-backoff wrapper; letting the SDK
+        # ALSO retry underneath that would multiply worst-case latency.
+        timeout=12.0, max_retries=0,
+    )
     if CEREBRAS_API_KEY else None
 )
 
@@ -132,8 +155,17 @@ if CEREBRAS_API_KEY:
     masked = CEREBRAS_API_KEY[:8] + "..." + CEREBRAS_API_KEY[-4:] if len(CEREBRAS_API_KEY) > 16 else "***"
     print(f"[LLM startup] Configured: Cerebras / {LLM_MODEL} (key: {masked})")
 else:
-    print("[LLM startup] CEREBRAS_API_KEY / GROQ_API_KEY NOT set. "
+    print("[LLM startup] CEREBRAS_API_KEY NOT set. "
           "Bot will use regex fallback only — replies will be basic.")
+
+# Payment startup diagnostic
+if PAYMENT_ENABLED:
+    print("[Payment startup] PAYMENT_ENABLED=true. Bot will issue a "
+          "manual bank-transfer invoice and wait for staff approval "
+          "before committing bookings.")
+else:
+    print("[Payment startup] PAYMENT_ENABLED=false. Bookings commit "
+          "directly on 'yes' — no payment step.")
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +232,39 @@ def _debug_snapshot() -> dict:
 # Abu Dhabi area keywords — used for a soft check on home-visit addresses.
 # Not exhaustive; the bot accepts anything but logs a warning if no match.
 ABU_DHABI_KEYWORDS = [
-    "abu dhabi", "al bateen", "bateen", "marina", "saadiyat", "yas",
+    "abu dhabi", "al bateen", "bateen", "saadiyat", "yas",
     "reem", "khalifa city", "mohamed bin zayed", "mbz", "al raha",
-    "shahama", "khalidiyah", "khalidiya", "corniche", "hudayriyat",
-    "al maryah", "maryah", "al reem",
+    "shahama", "khalidiyah", "khalidiya", "hudayriyat",
+    "al maryah", "maryah", "al reem", "al mushrif", "mushrif",
+    "al nahyan", "nahyan",
 ]
+# NOTE: "marina" and "corniche" were removed from this list — both are
+# common enough elsewhere (Dubai Marina and Sharjah's Corniche are each
+# arguably more famous than any Abu Dhabi place using the same word) that
+# keeping them here let addresses like "Dubai Marina" pass the check just
+# because "marina" appeared in the text. The OTHER_EMIRATES exclusion
+# list below is the real fix for this class of problem — it explicitly
+# rejects anything naming another emirate, regardless of what area
+# keywords also happen to appear in the same address.
+
+OTHER_EMIRATES_KEYWORDS = [
+    "dubai", "sharjah", "ajman", "fujairah", "ras al khaimah", "rak",
+    "umm al quwain", "al ain",
+    # Al Ain is technically part of Abu Dhabi emirate but is a distinct
+    # city ~150km from the areas NativaCare's midwives actually cover —
+    # treated as out-of-area here since a same-day home visit isn't
+    # realistic. Adjust if that's not actually true for your coverage.
+]
+
+
+def _address_names_other_emirate(addr: str) -> bool:
+    """True if the address explicitly names a DIFFERENT emirate/city —
+    checked BEFORE the positive Abu Dhabi keyword match, so an address
+    like "Dubai Marina" can't slip through just because it also contains
+    an ambiguous word. This check wins even if an Abu Dhabi keyword is
+    ALSO present (e.g. "Reem street, Dubai" is still Dubai)."""
+    addr_lc = addr.lower()
+    return any(kw in addr_lc for kw in OTHER_EMIRATES_KEYWORDS)
 
 
 def is_too_generic_address(addr: str) -> bool:
@@ -240,10 +300,65 @@ def is_too_generic_address(addr: str) -> bool:
 STATE_BROWSING = "browsing"
 STATE_SERVICE_SELECTING = "service_selecting"
 STATE_CONFIRMING_SERVICE = "confirming_service"
+STATE_VARIANT_PICKING = "variant_picking"
+# Between BROWSING and CONFIRMING_SERVICE for services that have tier
+# variants (e.g. Nanny Training "Half Day"/"Full Day") — the user picked
+# the family, now needs to pick which specific tier before we can
+# confirm a single bookable service_id.
+STATE_LANGUAGE_PICKING = "language_picking"
 STATE_SLOT_PICKING = "slot_picking"
 STATE_COLLECTING_DETAILS = "collecting_details"
 STATE_AWAITING_CONFIRM = "awaiting_confirm"
+STATE_AWAITING_PAYMENT = "awaiting_payment"
 STATE_BOOKED = "booked"
+
+# Supported session languages. When user is in STATE_LANGUAGE_PICKING,
+# they must pick one of these before day/time selection continues.
+# The bot then filters slots to only midwives who speak that language.
+SUPPORTED_LANGUAGES = ["English", "Arabic", "French", "Urdu"]
+
+# Aliases the user might type for each language. Lowercase; used to
+# normalize free-text ("arabic please" → "Arabic") to canonical form.
+LANGUAGE_ALIASES = {
+    "english": "English", "eng": "English", "en": "English",
+    "arabic": "Arabic", "ar": "Arabic", "arb": "Arabic",
+    "french": "French", "fr": "French", "français": "French",
+    "urdu": "Urdu", "ur": "Urdu", "urdo": "Urdu",
+}
+
+
+def normalize_language(raw: str) -> Optional[str]:
+    """Normalize a user's language mention to canonical form.
+
+    Returns "English"/"Arabic"/"French"/"Urdu" if a supported language is
+    detected (case-insensitive, alias-aware), else None. Matches any
+    supported language mentioned anywhere in the message.
+    """
+    if not raw:
+        return None
+    lc = raw.lower().strip()
+    # Direct alias match
+    if lc in LANGUAGE_ALIASES:
+        return LANGUAGE_ALIASES[lc]
+    # Substring match — user might say "in arabic please"
+    for alias, canonical in LANGUAGE_ALIASES.items():
+        # Word boundary to avoid "french" matching "frenchness" etc.
+        if re.search(rf"\b{re.escape(alias)}\b", lc):
+            return canonical
+    return None
+
+
+def midwife_speaks(midwife: dict, language: str) -> bool:
+    """Check whether a midwife speaks the given canonical language.
+
+    The `languages` field on midwives is a free-text string in the Sheet,
+    typically space- or comma-separated (e.g. "English Arabic French").
+    Case-insensitive substring match against the language name.
+    """
+    if not language:
+        return True  # no filter → all midwives ok
+    langs = (midwife.get("languages") or "").lower()
+    return language.lower() in langs
 
 # Detail-collection fields, in the order they're asked
 DETAIL_FIELDS = ["patient_name", "phone", "email", "patient_address"]
@@ -283,6 +398,17 @@ def append_history(session: dict, user_msg: str, assistant_msg: str):
     session["history"].append({"role": "user", "content": user_msg})
     session["history"].append({"role": "assistant", "content": assistant_msg})
     session["history"] = session["history"][-12:]
+
+
+def record_staff_reply(session_id: str, message: str):
+    """Called from main.py when staff send a message from the dashboard
+    during human takeover, so the bot's own history stays coherent if/when
+    takeover is switched back off and it resumes the conversation."""
+    session = _sessions.get(session_id)
+    if session is not None:
+        session["history"].append({"role": "assistant", "content": message})
+        session["history"] = session["history"][-12:]
+    save_chat_log(session_id, "[staff]", message)
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +841,7 @@ async def _build_understand_prompt(session: Optional[dict] = None) -> str:
         bookable_services, get_midwives, get_packages, get_clinic_info
     )
     svc_list = "\n".join(f"- {s['service_name']} (id: {s['service_id']})"
-                         for s in services[:30])
+                         for s in group_services_by_family(services)[:30])
     mw_list = "\n".join(f"- {m['midwife_name']} (id: {m['midwife_id']})"
                         for m in midwives[:20])
     pkg_list = "\n".join(f"- {p['package_name']} (id: {p['package_id']})"
@@ -783,7 +909,22 @@ async def _llm_understand_call(messages: list, sys_prompt: str,
     full_sys = sys_prompt + extra
     t0 = _time.perf_counter()
     try:
-        resp = call_llm_with_retry(
+        # CRITICAL: this must be awaited via to_thread, not called directly.
+        # call_llm_with_retry() is a synchronous function that makes a
+        # blocking HTTP call to Cerebras (plus blocking time.sleep() on
+        # retries) — calling it directly inside this async function would
+        # freeze Python's single-threaded event loop for however long that
+        # takes, stalling EVERY other request the server is handling at
+        # that moment (every other conversation, dashboard polling,
+        # webhooks, all of it), not just this one. Running it in a worker
+        # thread via to_thread lets the event loop keep serving everyone
+        # else while this one call is in flight. This was previously
+        # causing exactly the "randomly hangs on any message" symptom —
+        # any concurrent request could be the one blocking the whole
+        # server, so which conversation appeared to "freeze" looked random
+        # from the outside even though the actual cause was consistent.
+        resp = await asyncio.to_thread(
+            call_llm_with_retry,
             model=GROQ_MODEL,
             messages=[{"role": "system", "content": full_sys}] + messages,
             temperature=0.0,
@@ -1027,6 +1168,7 @@ PHRASING:
 - When you offer to do something (book, show slots, etc.), tell the user the EXACT phrase to reply with. Example: instead of "would you like to proceed?", say "reply 'book it' and I'll show available times." Don't ask vague yes/no questions you can't act on.
 - Do NOT offer to "show you available slots" or "show times" as a follow-up. If a service is active, suggest the user reply "book it" — the booking flow will show the slots, not you.
 - CRITICAL — PACKAGES: Packages (Pregnancy Foundation, Full Caseload Care, Postnatal Recovery Bundle, Newborn Starter, Mummy and Baby Wellbeing, or anything in the PACKAGES section of the catalog) are NOT bookable through chat. NEVER tell the user to "reply 'book [package name]'" or say a package "is available" to book. When discussing a package, ALWAYS include the phone number: "To book the Newborn Starter, call +971507297197 or email info@nativacare.com." If the user wants a single service instead, suggest one from the bookable services list.
+- When answering a "what services do you offer" style question, after listing the bookable services, add one short closing sentence mentioning that packages (bundles) are also available and that the user can ask about them — don't list the packages themselves unless asked specifically about packages.
 
 LENGTH AND FORMAT:
 - For LISTING questions ("what services do you offer", "who are your midwives", "what packages do you have"): list the items. Up to 140 words. Use a brief intro sentence followed by a bulleted list. Don't say "various" or "many" — list them.
@@ -1072,7 +1214,7 @@ async def _build_compose_context(intent: str, slots: dict,
 
     need_services = intent in ("service_list", "price_question", "general", "faq")
     need_midwives = intent in ("midwife_list", "midwife_question", "general")
-    need_packages = intent in ("package_question", "price_question", "general")
+    need_packages = intent in ("package_question", "price_question", "general", "service_list")
     need_faqs = intent in ("faq", "general")
 
     # Always include the bookable-service list, even on intents that don't
@@ -1081,17 +1223,32 @@ async def _build_compose_context(intent: str, slots: dict,
     bookable_names = {s["service_name"] for s in bookable}
     parts.append("\nBookable services (only these can be booked):")
     if need_services:
-        for s in bookable[:20]:
-            parts.append(
-                f"- {s['service_name']} ({s.get('category', '')}): "
-                f"AED {s.get('default_price_aed', '?')}, "
-                f"{s.get('duration_minutes', '?')} min, "
-                f"location: {s.get('location_type', '')}"
-            )
+        # Group tier variants (e.g. Nanny Training "Half Day"/"Full Day")
+        # under one line so the initial list doesn't overwhelm the user
+        # with every combination up front — the specific tiers get shown
+        # once they actually pick that family (see the variant-picking
+        # step in the main state machine below).
+        for s in group_services_by_family(bookable):
+            if s.get("_variant_count", 1) > 1:
+                parts.append(
+                    f"- {s['service_name']} ({s.get('category', '')}): "
+                    f"from AED {s.get('default_price_aed', '?')} "
+                    f"({s['_variant_count']} options available — mention "
+                    f"there are multiple options, don't list exact tiers "
+                    f"or prices for the other options), "
+                    f"location: {s.get('location_type', '')}"
+                )
+            else:
+                parts.append(
+                    f"- {s['service_name']} ({s.get('category', '')}): "
+                    f"AED {s.get('default_price_aed', '?')}, "
+                    f"{s.get('duration_minutes', '?')} min, "
+                    f"location: {s.get('location_type', '')}"
+                )
     else:
         # Compact list, just names — so the LLM can recognize what's offered
         # without bloating the prompt.
-        for s in bookable[:20]:
+        for s in group_services_by_family(bookable):
             parts.append(f"- {s['service_name']}")
 
     # Tell the LLM about advertised-but-unbookable services explicitly, so
@@ -1161,7 +1318,10 @@ async def compose_reply(session: dict, user_message: str,
         # Build the user-side messages separately so we can log them cleanly
         user_messages = history + [{"role": "user", "content": user_message}]
         messages = [{"role": "system", "content": sys_prompt}] + user_messages
-        resp = call_llm_with_retry(
+        # Same fix as _llm_understand_call above — must run in a worker
+        # thread, not block the event loop directly.
+        resp = await asyncio.to_thread(
+            call_llm_with_retry,
             model=GROQ_MODEL,
             messages=messages,
             temperature=0.3,
@@ -1342,6 +1502,24 @@ def llm_error_reply(session: dict, err: Exception) -> str:
 # Booking-flow templates (deterministic, no LLM)
 # ---------------------------------------------------------------------------
 
+async def render_variant_choice(family_name: str, variants: list) -> str:
+    """Shown when a picked service turns out to have multiple tiers (half
+    day/full day, single visit/3-visit program, etc.) — lists the actual
+    options with their real prices/durations so the user can pick one
+    before moving into the normal single-service confirmation flow."""
+    lines = [f"{family_name} has a few options:"]
+    for v in variants:
+        label = v.get("variant_label") or v.get("service_name", "")
+        price = v.get("default_price_aed", "?")
+        duration = v.get("duration_minutes", "")
+        visits = v.get("visits_required", "")
+        extra = f", {visits} visits" if visits and str(visits) not in ("", "1") else ""
+        duration_str = f", {duration} min" if duration else ""
+        lines.append(f"  • {label} — AED {price}{duration_str}{extra}")
+    lines.append("\nWhich would you like?")
+    return "\n".join(lines)
+
+
 async def bookable_services() -> list:
     """Return only services that have at least one active midwife mapped to
     them in `midwife_services`. Prevents the bot from advertising services
@@ -1357,20 +1535,82 @@ async def bookable_services() -> list:
     return [s for s in services if s["service_id"] in bookable_service_ids]
 
 
+def group_services_by_family(services: list) -> list:
+    """Collapse tier variants of the same underlying service (e.g. Nanny
+    Training "Half Day" AED 2900 / "Full Day" AED 4600, both sharing
+    family_name="Nanny Training") into ONE representative entry — used
+    whenever we're showing the top-level service list, so a user isn't
+    shown 11 near-duplicate line items when there are really 4 distinct
+    things to choose from. Standalone services (blank family_name) pass
+    through unchanged, one entry each.
+
+    The representative entry uses the LOWEST price among the family's
+    variants (a natural "starting from" price) and gets an extra
+    "_variant_count" key so callers can tell it's a group. The original
+    per-variant rows are never mutated — resolving a family back to its
+    specific variants happens separately, when the user actually picks
+    that family (see the variant-picking step in the main state machine).
+    """
+    families: dict = {}
+    standalone: list = []
+    order: list = []
+
+    for s in services:
+        family = s.get("family_name") or ""
+        if not family:
+            standalone.append(s)
+            continue
+        if family not in families:
+            families[family] = []
+            order.append(family)
+        families[family].append(s)
+
+    grouped = []
+    for family in order:
+        variants = families[family]
+        if len(variants) == 1:
+            grouped.append(variants[0])
+            continue
+        cheapest = min(
+            variants,
+            key=lambda v: float(v.get("default_price_aed") or "inf")
+            if str(v.get("default_price_aed") or "").replace(".", "", 1).isdigit()
+            else float("inf"),
+        )
+        representative = dict(cheapest)
+        representative["service_name"] = family
+        representative["_variant_count"] = len(variants)
+        representative["_variant_service_ids"] = [v["service_id"] for v in variants]
+        grouped.append(representative)
+
+    return standalone + grouped
+
+
+def resolve_family_variants(services: list, family_name: str) -> list:
+    """The reverse of the grouping above — given a family name, return
+    every service row that belongs to it (for showing the actual tier
+    choices once a family has been picked)."""
+    return [s for s in services if (s.get("family_name") or "") == family_name]
+
+
 async def render_service_menu() -> str:
     services = await bookable_services()
     if not services:
         return ("I'm having trouble loading the service list. Please call us "
                 "at +971 50 729 7197.")
     lines = ["Which service would you like to book?"]
-    # Group by category for readability
+    # Group by category for readability, and collapse tier variants
+    # (half day/full day, single-visit/3-visit/5-visit, etc.) into one
+    # line per family so this menu doesn't list near-duplicates.
+    display_services = group_services_by_family(services)
     by_cat: dict = {}
-    for s in services:
+    for s in display_services:
         by_cat.setdefault(s.get("category", "Other"), []).append(s)
     for cat in by_cat:
         lines.append(f"\n{cat}:")
         for s in by_cat[cat][:8]:
-            lines.append(f"  • {s['service_name']}")
+            suffix = " (multiple options)" if s.get("_variant_count", 1) > 1 else ""
+            lines.append(f"  • {s['service_name']}{suffix}")
     return "\n".join(lines)
 
 
@@ -1520,8 +1760,11 @@ async def render_service_confirmation(service_id: str,
     if detail_bits:
         parts.append(f"({', '.join(detail_bits)})")
     parts.append("?")
+    description = (svc.get("description") or "").strip()
+    desc_line = f"\n\n{description}" if description else ""
     return (
         " ".join(parts)
+        + desc_line
         + "\n\nReply 'yes' to continue, or tell me which service you'd prefer instead."
     )
 
@@ -1593,6 +1836,113 @@ async def render_unbookable_service_message(service_id: str,
     return msg
 
 
+def render_language_prompt(service_name: str = "") -> str:
+    """Return the prompt asking user which language they'd like their
+    session in. Called when transitioning into LANGUAGE_PICKING state."""
+    prefix = ""
+    if service_name:
+        prefix = f"Great — {service_name} it is. "
+    return (
+        prefix + "In which language would you like your session?\n\n"
+        + "\n".join(f"  • {lang}" for lang in SUPPORTED_LANGUAGES)
+        + "\n\nReply with a language (e.g. 'English' or 'Arabic')."
+    )
+
+
+async def midwives_speaking(language: str) -> list[dict]:
+    """Return active midwives who speak the given language (canonical form).
+    Empty if none. Used for language-filtered slot filtering."""
+    midwives = await get_midwives()
+    return [m for m in midwives
+            if m.get("active", True) and midwife_speaks(m, language)]
+
+
+async def render_next_available_days_by_language(
+    service_id: str, language: str,
+    num_days: int = 7,
+    service_name: str = "",
+) -> str:
+    """Same as render_next_available_days, but only counts slots from
+    midwives who speak the requested language.
+
+    If a day has zero slots after filtering, it's omitted from the list.
+    If NO days have any slots in this language, we tell the user honestly
+    and offer the phone number rather than showing empty days.
+    """
+    if not await is_service_bookable(service_id):
+        return await render_unbookable_service_message(
+            service_id, service_name or service_id
+        )
+    days = await get_next_available_days(service_id, num_days=num_days)
+    if not days:
+        return ("I couldn't find any open slots in the next "
+                f"{num_days} days. Please call us at +971 50 729 7197 to "
+                "discuss options.")
+
+    # Filter each day's slots by language, keep only days with 1+ slot
+    filtered = []
+    for d in days:
+        matching = [s for s in d.slots
+                    if _slot_matches_language(s, language)]
+        if matching:
+            filtered.append((d, len(matching)))
+
+    if not filtered:
+        return (f"I don't have any {language}-language slots available for "
+                f"{service_name or 'this service'} in the next {num_days} "
+                f"days. Please call us at +971 50 729 7197 to discuss "
+                f"other options, or reply with a different language.")
+
+    lines = [f"Available days for {language} sessions:"]
+    for d, count in filtered:
+        on_date = datetime.strptime(d.date, "%Y-%m-%d")
+        nice = on_date.strftime("%A, %B %d")
+        lines.append(f"  • {nice} ({count} slot{'s' if count != 1 else ''} available)")
+    lines.append("\nReply with a date (e.g. 'May 18' or 'Tuesday').")
+    return "\n".join(lines)
+
+
+def _slot_matches_language(slot, language: str) -> bool:
+    """Check whether a slot's midwife speaks the given language.
+
+    Uses the slot's `midwife_name` to look up the midwife's languages.
+    Cached midwife lookup would be nicer but this is called for every
+    slot in the day list, and the midwives list is small (2-5 entries)
+    so linear search is fine.
+    """
+    if not language:
+        return True
+    # This function is called with a slot object that has midwife_name
+    # but not the full midwife record. To check languages, we need to
+    # look up the midwife. For efficiency we memoize per-call via a
+    # class attribute — refreshed each render pass.
+    # (Actual lookup happens via _get_midwife_languages_cached below.)
+    langs = _get_midwife_languages_cached(slot.midwife_name)
+    return language.lower() in langs.lower()
+
+
+# Small in-memory cache of midwife name → languages string. Refreshed
+# each time midwives are re-fetched by the top of a request.
+_MIDWIFE_LANG_CACHE = {}
+
+
+def _get_midwife_languages_cached(midwife_name: str) -> str:
+    """Look up a midwife's languages string from the cache. Returns
+    empty string if not found (fail-open: unknown midwife = no filter)."""
+    return _MIDWIFE_LANG_CACHE.get(midwife_name, "")
+
+
+async def _refresh_midwife_lang_cache():
+    """Refresh the midwife-language cache from the Sheet. Called at the
+    start of each language-filtered render pass."""
+    global _MIDWIFE_LANG_CACHE
+    midwives = await get_midwives()
+    _MIDWIFE_LANG_CACHE = {
+        m["midwife_name"]: (m.get("languages") or "")
+        for m in midwives if m.get("midwife_name")
+    }
+
+
 async def render_next_available_days(service_id: str, num_days: int = 7,
                                      service_name: str = "") -> str:
     # Defensive check: is this service actually bookable at all?
@@ -1614,11 +1964,27 @@ async def render_next_available_days(service_id: str, num_days: int = 7,
     return "\n".join(lines)
 
 
-async def render_slots_for_day(service_id: str, date_str: str) -> str:
+async def render_slots_for_day(service_id: str, date_str: str,
+                               language: Optional[str] = None) -> str:
     day = await get_availability(service_id, date_str)
     if not day.slots:
         return (f"No slots available on {date_str}. Would you like to try "
                 "another day?")
+    # Language filter: if requested, keep only slots with midwives who
+    # speak that language. Requires the midwife-language cache to be
+    # populated (call _refresh_midwife_lang_cache() before this).
+    if language:
+        await _refresh_midwife_lang_cache()
+        filtered_slots = [s for s in day.slots
+                          if _slot_matches_language(s, language)]
+        if not filtered_slots:
+            return (f"No {language}-language slots available on {date_str}. "
+                    f"Reply with a different day, or a different language.")
+        # Rebuild a filtered day view for format_slots_human
+        from models import DayAvailability
+        day = DayAvailability(
+            date=day.date, weekday=day.weekday, slots=filtered_slots,
+        )
     return ("Here are the available times:\n\n"
             + format_slots_human(day, max_lines=30)
             + "\n\nReply with a time (e.g. '10:00' or '2pm').")
@@ -1692,6 +2058,70 @@ def detect_day_type(message: str) -> Optional[str]:
     if any(p in lc for p in _WEEKDAY_PHRASES):
         return "weekday"
     return None
+
+
+# Named-weekday safety net. The LLM resolves phrases like "saturday" into
+# an actual YYYY-MM-DD itself (see the "Resolve relative dates" rule in
+# the understand prompt) — but it can get this wrong, especially when a
+# message mixes a weekday name with a number that could be misread as a
+# day-of-month instead of a time (real example: "saturday at 10" was
+# resolved to "the 10th" — which happened to be a Thursday — instead of
+# the actual next Saturday). Since checking "does this date really fall
+# on the weekday the user named" is simple, deterministic arithmetic, we
+# don't need to trust the LLM for it at all — this catches and silently
+# corrects that entire class of mistake regardless of why the LLM got it
+# wrong.
+_WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def detect_named_weekday(message: str) -> Optional[int]:
+    """Return 0-6 (Monday=0) if the message names a specific day of the
+    week, else None. Deliberately distinct from detect_day_type() above,
+    which only detects the generic categories "weekend"/"weekday" — this
+    is for an exact day name like "saturday" or "next friday"."""
+    if not message:
+        return None
+    lc = message.lower()
+    for name, idx in _WEEKDAY_NAMES.items():
+        if re.search(r"\b" + name + r"\b", lc):
+            return idx
+    return None
+
+
+def correct_date_for_named_weekday(message: str, date_str: Optional[str]) -> Optional[str]:
+    """If the message names a specific weekday (e.g. "saturday") and
+    date_str doesn't actually fall on that weekday, return the corrected
+    date — the next real occurrence of the named weekday from today.
+    Returns date_str unchanged if there's nothing to correct, or None
+    was passed through if date_str was falsy."""
+    if not date_str:
+        return date_str
+    target_weekday = detect_named_weekday(message)
+    if target_weekday is None:
+        return date_str
+    try:
+        parsed = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return date_str
+    if parsed.weekday() == target_weekday:
+        return date_str  # already correct, nothing to do
+
+    today = datetime.now()
+    days_ahead = (target_weekday - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7  # "saturday" said on a Saturday means NEXT Saturday
+    corrected = today + timedelta(days=days_ahead)
+    corrected_str = corrected.strftime("%Y-%m-%d")
+    _debug_event(
+        f"Weekday mismatch corrected: LLM extracted {date_str} "
+        f"({parsed.strftime('%A')}) but message named "
+        f"{list(_WEEKDAY_NAMES.keys())[target_weekday]} — using "
+        f"{corrected_str} instead"
+    )
+    return corrected_str
 
 
 async def render_days_by_type(service_id: str, day_type: str,
@@ -1847,7 +2277,7 @@ async def render_nearest_slots(service_id: str, date_str: str,
 
     lines = [prefix + f"Closest available times to {target_time}:"]
     for _, slot in near:
-        lines.append(f"  • {slot.start_time} with {slot.midwife_name}")
+        lines.append(f"  • {slot.start_time}")
     lines.append("\nReply with one of these times, or ask for a different day.")
     return "\n".join(lines)
 
@@ -1948,29 +2378,46 @@ def ready_for_summary(session: dict) -> bool:
 
 def booking_summary(session: dict) -> str:
     lead = session.get("lead", {})
-    on_date = lead.get("appointment_date", "")
-    try:
-        nice_date = datetime.strptime(on_date, "%Y-%m-%d").strftime("%A, %B %d, %Y")
-    except (ValueError, TypeError):
-        nice_date = on_date
-
+    price = lead.get("price_aed") or "—"
     email = lead.get("email") if valid(lead.get("email")) else "Not provided"
     address = lead.get("patient_address") or "—"
-    price = lead.get("price_aed") or "—"
+
+    visits = lead.get("scheduled_visits") or []
+    if len(visits) > 1:
+        visit_lines = []
+        for i, v in enumerate(visits, start=1):
+            try:
+                nice = datetime.strptime(v["date"], "%Y-%m-%d").strftime("%A, %B %d, %Y")
+            except (ValueError, TypeError):
+                nice = v.get("date", "")
+            visit_lines.append(
+                f"  Visit {i}: {nice} at {v.get('time','')} with {v.get('midwife_name') or 'your midwife'}"
+            )
+        schedule_block = "• Schedule (" + str(len(visits)) + " visits):\n" + "\n".join(visit_lines)
+    else:
+        on_date = lead.get("appointment_date", "")
+        try:
+            nice_date = datetime.strptime(on_date, "%Y-%m-%d").strftime("%A, %B %d, %Y")
+        except (ValueError, TypeError):
+            nice_date = on_date
+        schedule_block = (
+            f"• Date: {nice_date}\n"
+            f"• Time: {lead.get('appointment_time', '')} "
+            f"({lead.get('duration_minutes', 60)} min)"
+        )
 
     return (
         "Please review your appointment details:\n\n"
         f"• Service: {lead.get('service_name', '')}\n"
-        f"• Midwife: {lead.get('midwife_name', '')}\n"
-        f"• Date: {nice_date}\n"
-        f"• Time: {lead.get('appointment_time', '')} "
-        f"({lead.get('duration_minutes', 60)} min)\n"
+        f"• Language: {lead.get('language', 'English')}\n"
+        f"{schedule_block}\n"
         f"• Location: {lead.get('location_type', '').replace('_', ' ')}\n"
         f"• Address: {address}\n"
         f"• Name: {lead.get('patient_name', '')}\n"
         f"• Phone: {lead.get('phone', '')}\n"
         f"• Email: {email}\n"
-        f"• Estimated price: AED {price}\n\n"
+        f"• Estimated price: AED {price}"
+        + (" (covers all visits)" if len(visits) > 1 else "") + "\n\n"
         "Reply 'yes' to confirm, or tell me what to change "
         "(e.g. 'change time to 11am')."
     )
@@ -2032,8 +2479,39 @@ async def pick_slot_for_lead(session: dict, time_str: str) -> bool:
 # Commit
 # ---------------------------------------------------------------------------
 
+async def create_payment_invoice(session: dict, source: str) -> str:
+    """Create a persisted manual-payment invoice for the current booking
+    and return the chat message to show.
+
+    This replaces the old placeholder Stripe-link flow. Instead of a fake
+    checkout URL and a trust-based "type 'paid'" fallback, this writes a
+    real Invoice row (see payments.py / db.py) immediately — independent
+    of this chat session — with the bank details and a reference code.
+    That way the booking survives the session expiring, the tab closing,
+    or the server restarting; approval later reads from that row, not
+    from this in-memory session.
+    """
+    import payments
+
+    lead = session.get("lead", {})
+    contact = lead.get("phone") or lead.get("email") or ""
+    invoice = payments.create_invoice_for_lead(
+        session_id=session.get("id", ""),
+        channel=source,
+        contact=contact,
+        lead=dict(lead),
+    )
+    # Keep the reference on the session too, so if the user comes back
+    # mid-session we can still show/re-check it without hitting the DB
+    # by session_id (channel/contact is the durable lookup key; this is
+    # just a same-session convenience).
+    session["lead"]["invoice_id"] = invoice["id"]
+    session["lead"]["invoice_reference"] = invoice["reference"]
+    return payments.format_invoice_message(invoice)
+
+
 async def commit_appointment(session: dict, source: str) -> str:
-    from calendar_service import create_appointment_event
+    from calendar_service import create_appointment_events
     from email_service import (send_patient_confirmation,
                                send_clinic_notification)
 
@@ -2057,9 +2535,15 @@ async def commit_appointment(session: dict, source: str) -> str:
         duration_minutes=int(lead_data.get("duration_minutes") or 60),
         price_aed=str(lead_data.get("price_aed") or ""),
         package_id=lead_data.get("package_id", ""),
-        language="en",
+        payment_status=lead_data.get("payment_status", ""),
+        language=lead_data.get("language", "en"),
         source=source,
         status="confirmed",
+        additional_visits=lead_data.get("scheduled_visits", [])[1:],
+        # scheduled_visits[0] is the same visit already in
+        # appointment_date/time above (it's sorted first) — only the
+        # REST are "additional". For an ordinary single-visit booking,
+        # scheduled_visits has exactly one entry, so this is just [].
     )
     save_appointment(lead)
 
@@ -2071,17 +2555,37 @@ async def commit_appointment(session: dict, source: str) -> str:
     session["email_asked"] = False
 
     lead_dict = lead.model_dump()
-    cal_status = create_appointment_event(lead_dict)
+    cal_statuses = create_appointment_events(lead_dict)
     patient_email_status = await send_patient_confirmation(lead_dict)
     clinic_email_status = await send_clinic_notification(lead_dict)
 
     session["appointment_status"] = {
-        "calendar": cal_status,
+        "calendar": cal_statuses,
         "patient_email": patient_email_status,
         "clinic_email": clinic_email_status,
     }
 
     last = session["last_booking"]
+    visits = last.get("scheduled_visits") or []
+
+    if len(visits) > 1:
+        visit_lines = []
+        for i, v in enumerate(visits, start=1):
+            try:
+                nice = datetime.strptime(v["date"], "%Y-%m-%d").strftime("%A, %B %d")
+            except (ValueError, TypeError):
+                nice = v.get("date", "")
+            visit_lines.append(f"  Visit {i}: {nice} at {v.get('time','')}")
+        schedule_text = "\n".join(visit_lines)
+        return (
+            f"🎉 Your {last.get('service_name', 'program')} is confirmed — "
+            f"{len(visits)} visits scheduled:\n\n{schedule_text}\n\n"
+            f"📧 Confirmation email sent to {last.get('email') or 'you'}\n"
+            f"💬 Our manager has been notified — they'll reach out shortly "
+            f"if any details need to be finalized.\n\n"
+            f"Thank you for choosing us!"
+        )
+
     try:
         nice_date = datetime.strptime(
             last["appointment_date"], "%Y-%m-%d"
@@ -2090,10 +2594,12 @@ async def commit_appointment(session: dict, source: str) -> str:
         nice_date = last.get("appointment_date", "")
 
     return (
-        f"Your {last.get('service_name', 'appointment')} is confirmed for "
-        f"{nice_date} at {last.get('appointment_time', '')} with "
-        f"{last.get('midwife_name', '')}. We'll be in touch with any "
-        "further details. Thank you for choosing us."
+        f"🎉 Your {last.get('service_name', 'appointment')} is confirmed for "
+        f"{nice_date} at {last.get('appointment_time', '')}.\n\n"
+        f"📧 Confirmation email sent to {last.get('email') or 'you'}\n"
+        f"💬 Our manager has been notified — they'll reach out shortly "
+        f"if any details need to be finalized.\n\n"
+        f"Thank you for choosing us!"
     )
 
 
@@ -2179,6 +2685,26 @@ async def get_ai_response(session_id: str, user_message: str,
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
 
+    # Human-takeover short-circuit: staff have explicitly taken this
+    # conversation over from the dashboard (see main.py POST
+    # /conversations/{id}/takeover — this exists mainly for WhatsApp,
+    # where the bot and staff share one number). While active, the bot
+    # stays silent and just logs the message — staff see it on the
+    # dashboard and reply themselves via POST /conversations/{id}/reply,
+    # which sends through the same channel the patient is using. This is
+    # different from wants_human_handoff() below, which is the bot
+    # proactively telling the patient to call/email; this is staff
+    # actively driving the conversation themselves.
+    import db as _db
+    conv = _db.get_conversation(session_id)
+    if conv and conv.get("human_mode"):
+        _debug_event("Human takeover active — bot silent, logging only")
+        append_history(session, user_message, "[handled by staff]")
+        save_chat_log(session_id, user_message, "[human_mode — awaiting staff reply]")
+        payload = response_payload("", session)
+        payload["human_mode"] = True
+        return payload
+
     # Human-handoff short-circuit: user wants to talk to a person, not
     # the bot. Give them contact info immediately, preserve any
     # booking-in-progress so they can come back.
@@ -2243,6 +2769,33 @@ async def get_ai_response(session_id: str, user_message: str,
                      if len(w) > 2 and w.lower() not in skip]
             grounded = any(w in msg_lower for w in words)
             if grounded or not cur_lead_svc:
+                # Before staging this as a normal single-service candidate,
+                # check whether it's actually a family with multiple tier
+                # variants (half day/full day, single visit/3-visit
+                # program, etc.) — if so, the user needs to pick a specific
+                # tier first, rather than us silently booking whichever
+                # variant happened to be the LLM's representative pick.
+                all_services = await get_services()
+                matched_service = next(
+                    (s for s in all_services if s["service_id"] == proposed_svc_id),
+                    None,
+                )
+                family_name = (matched_service or {}).get("family_name") or ""
+                variants = resolve_family_variants(all_services, family_name) if family_name else []
+
+                if len(variants) > 1:
+                    session["variant_family"] = family_name
+                    session["state"] = STATE_VARIANT_PICKING
+                    _debug_event(
+                        f"Service {proposed_svc_name} belongs to family "
+                        f"'{family_name}' with {len(variants)} variants — "
+                        f"asking user to pick a tier before confirming."
+                    )
+                    reply = await render_variant_choice(family_name, variants)
+                    append_history(session, user_message, reply)
+                    save_chat_log(session_id, user_message, reply)
+                    return response_payload(reply, session)
+
                 # Set as candidate, NOT as the committed service
                 session["candidate_service"] = {
                     "service_id": proposed_svc_id,
@@ -2252,6 +2805,30 @@ async def get_ai_response(session_id: str, user_message: str,
                     f"Staged candidate service: {proposed_svc_name} "
                     f"(grounded={grounded})"
                 )
+                # BUGFIX: STATE_BROWSING has no dedicated handler further
+                # down in this function — without explicitly transitioning
+                # here, session["state"] stays "browsing" forever after
+                # this point (candidate_service alone doesn't advance it).
+                # Every later message then falls through every specific
+                # `if state == ...` check below (none match "browsing")
+                # and lands on the generic conversational fallback, which
+                # just uses the LLM to talk *about* booking without ever
+                # running the real deterministic flow — slot locking,
+                # commit_appointment(), and the payment gate never
+                # execute. This was silently producing fake "confirmed"
+                # replies with no real booking or invoice behind them.
+                if state == STATE_BROWSING:
+                    session["state"] = STATE_CONFIRMING_SERVICE
+                    _debug_event(
+                        f"Auto-entered CONFIRMING_SERVICE from BROWSING "
+                        f"for {proposed_svc_name} ({proposed_svc_id})"
+                    )
+                    reply = await render_service_confirmation(
+                        proposed_svc_id, proposed_svc_name
+                    )
+                    append_history(session, user_message, reply)
+                    save_chat_log(session_id, user_message, reply)
+                    return response_payload(reply, session)
             else:
                 _debug_event(
                     f"Rejected service proposal {proposed_svc_name} "
@@ -2279,11 +2856,97 @@ async def get_ai_response(session_id: str, user_message: str,
         if key in blocked_keys:
             continue  # handled by state handler with validation
 
+        # Weekday safety net (see correct_date_for_named_weekday) — catches
+        # the LLM resolving "saturday" to a date that isn't actually a
+        # Saturday, before it ever reaches the lead or gets shown to the
+        # user as a fake confirmation.
+        if key == "appointment_date":
+            value = correct_date_for_named_weekday(user_message, value)
+
         # Only set if not already set, or if it's an answer-style update
         if not valid(lead.get(key)):
             lead[key] = value
         elif intent in ("correction", "answer", "pick_slot") and lead.get(key) != value:
             lead[key] = value
+
+    # =====================================================================
+    # State: VARIANT_PICKING — user picked a service family with multiple
+    # tiers (half day/full day, single visit/3-visit program, etc.) and
+    # now needs to pick a specific one before we can confirm a real
+    # bookable service_id.
+    # =====================================================================
+    if state == STATE_VARIANT_PICKING:
+        family_name = session.get("variant_family", "")
+        all_services = await get_services()
+        variants = resolve_family_variants(all_services, family_name)
+
+        if intent == "deny" or msg_lower.strip() in ("cancel", "nevermind", "never mind"):
+            session["state"] = STATE_BROWSING
+            session.pop("variant_family", None)
+            reply = "No problem — let me know if you'd like to see the options again or pick something else."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Match the user's reply against each variant's label/name. Two
+        # passes: first look for an EXACT label match as a substring
+        # ("full day" in "full day please, yes"), which is unambiguous.
+        # Only fall back to individual-word matching if no full label
+        # matched, and even then, exclude words shared by 2+ variants in
+        # this family ("day" appears in both "Half Day" and "Full Day" —
+        # matching on it alone can't tell them apart, and matching
+        # whichever variant happens to be checked first, as an earlier
+        # version of this code did, silently picks the wrong one).
+        matched = None
+        labels = [(v, (v.get("variant_label") or v.get("service_name") or "").lower()) for v in variants]
+
+        for v, label in labels:
+            if label and label in msg_lower:
+                matched = v
+                break
+
+        if not matched:
+            word_counts: dict = {}
+            for _, label in labels:
+                for w in set(re.findall(r"[a-z]+", label)):
+                    if len(w) > 2:
+                        word_counts[w] = word_counts.get(w, 0) + 1
+            distinctive_words = {w for w, count in word_counts.items() if count == 1}
+            for v, label in labels:
+                label_words = {w for w in re.findall(r"[a-z]+", label) if len(w) > 2}
+                if any(w in distinctive_words and w in msg_lower for w in label_words):
+                    matched = v
+                    break
+
+        if not matched and len(variants) > 0:
+            # Fall back: a bare number ("1", "2") picks by position, since
+            # some users will just reply with the option number even
+            # though we didn't explicitly number them.
+            stripped = msg_lower.strip()
+            if stripped.isdigit():
+                idx = int(stripped) - 1
+                if 0 <= idx < len(variants):
+                    matched = variants[idx]
+
+        if not matched:
+            reply = await render_variant_choice(family_name, variants)
+            reply = "Sorry, I didn't catch which one — " + reply[0].lower() + reply[1:]
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Matched a specific variant — stage it as the real candidate
+        # service and proceed exactly like a normal single-service pick.
+        session["candidate_service"] = {
+            "service_id": matched["service_id"],
+            "service_name": matched["service_name"],
+        }
+        session.pop("variant_family", None)
+        session["state"] = STATE_CONFIRMING_SERVICE
+        reply = await render_service_confirmation(matched["service_id"], matched["service_name"])
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
 
     # =====================================================================
     # State: CONFIRMING_SERVICE — bot asked "is this the right service?"
@@ -2335,7 +2998,10 @@ async def get_ai_response(session_id: str, user_message: str,
             return response_payload(reply, session)
 
         # User confirmed — commit the candidate service to the lead and
-        # advance to slot picking.
+        # advance to LANGUAGE PICKING (not straight to slot picking).
+        # NativaCare offers sessions in multiple languages; asking language
+        # first lets us filter the day/slot lists to only midwives who
+        # speak the requested language.
         if intent == "confirm":
             committed = commit_candidate_service(session)
             if not committed:
@@ -2345,11 +3011,26 @@ async def get_ai_response(session_id: str, user_message: str,
                 append_history(session, user_message, reply)
                 save_chat_log(session_id, user_message, reply)
                 return response_payload(reply, session)
-            session["state"] = STATE_SLOT_PICKING
-            reply = await render_next_available_days(
-                lead["service_id"],
-                service_name=lead.get("service_name", ""),
-            )
+
+            # Multi-visit programs (e.g. "Postnatal Recovery Program — 3
+            # visits") need N appointment dates scheduled, not one. Reads
+            # a "visits_required" column from the services sheet — a
+            # normal single-visit service just doesn't set it, so this
+            # defaults to 1 and nothing about the existing single-visit
+            # flow changes at all.
+            services = await get_services()
+            svc = next((s for s in services if s["service_id"] == lead["service_id"]), None)
+            visits_required = 1
+            if svc:
+                try:
+                    visits_required = max(1, int(svc.get("visits_required") or 1))
+                except (TypeError, ValueError):
+                    visits_required = 1
+            lead["visits_required"] = visits_required
+            lead["scheduled_visits"] = []
+
+            session["state"] = STATE_LANGUAGE_PICKING
+            reply = render_language_prompt(lead.get("service_name", ""))
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -2400,6 +3081,55 @@ async def get_ai_response(session_id: str, user_message: str,
             # No candidate? Fall back to the menu
             session["state"] = STATE_SERVICE_SELECTING
             reply = await render_service_menu()
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
+    # State: LANGUAGE_PICKING — user has confirmed service, now picks
+    # the session language. On success, we filter the day list to only
+    # midwives who speak that language, then advance to SLOT_PICKING.
+    # =====================================================================
+    if state == STATE_LANGUAGE_PICKING:
+        # Cancel
+        if intent == "deny":
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            reply = "Cancelled. Let me know if you'd like to start over."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Try to extract a language from the user's message
+        lang = normalize_language(user_message)
+        if not lang:
+            # Didn't recognize a language — re-prompt (softly)
+            reply = ("I didn't catch that. Please reply with one of the "
+                     "languages we offer: "
+                     + ", ".join(SUPPORTED_LANGUAGES) + ".")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Check that at least one midwife speaks this language
+        speakers = await midwives_speaking(lang)
+        if not speakers:
+            reply = (f"I don't currently have any midwives available for "
+                     f"{lang}-language sessions. Please pick from: "
+                     + ", ".join(SUPPORTED_LANGUAGES) + ", or call us at "
+                     f"+971 50 729 7197 to discuss options.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # All good — save language to lead, refresh cache, show days
+        lead["language"] = lang
+        await _refresh_midwife_lang_cache()
+        session["state"] = STATE_SLOT_PICKING
+        reply = await render_next_available_days_by_language(
+            lead["service_id"], lang,
+            service_name=lead.get("service_name", ""),
+        )
         append_history(session, user_message, reply)
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
@@ -2456,6 +3186,20 @@ async def get_ai_response(session_id: str, user_message: str,
                     save_chat_log(session_id, user_message, reply)
                     return response_payload(reply, session)
 
+            # Payment gate — if PAYMENT_ENABLED, move to AWAITING_PAYMENT
+            # instead of committing directly. The slot is NOT reserved here
+            # (per the "only reserve after payment" design decision) — the
+            # calendar event and email get created only after staff
+            # approve the uploaded payment proof (see payments.py).
+            if PAYMENT_ENABLED:
+                _debug_event("Payment gate: PAYMENT_ENABLED=true, routing to AWAITING_PAYMENT")
+                session["state"] = STATE_AWAITING_PAYMENT
+                reply = await create_payment_invoice(session, source)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+            _debug_event(f"Payment gate: PAYMENT_ENABLED=false (skipping payment step, committing directly)")
             reply = await commit_appointment(session, source)
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -2607,6 +3351,80 @@ async def get_ai_response(session_id: str, user_message: str,
         return response_payload(reply, session)
 
     # =====================================================================
+    # State: AWAITING_PAYMENT — invoice has been issued, waiting on staff
+    # to approve an uploaded payment screenshot.
+    #
+    # Nothing here commits a booking anymore — that only happens when
+    # staff approve the invoice on the dashboard (payments.approve_invoice,
+    # triggered from main.py, independent of this session). This state
+    # exists just to (a) let the patient check status or cancel, and
+    # (b) re-show the invoice details if they lost them. We deliberately
+    # no longer trust a typed "paid" — that was a placeholder for testing
+    # before real proof-of-payment existed.
+    #
+    # Slot is NOT reserved during this state. If staff reject the invoice
+    # or the patient never pays, the slot stays available for others.
+    # =====================================================================
+    if state == STATE_AWAITING_PAYMENT:
+        import db as _db
+        msg_lc = (user_message or "").strip().lower()
+        lead = session.get("lead", {})
+        invoice_id = lead.get("invoice_id")
+
+        # Cancellation — user changed their mind, drop the booking
+        if intent == "deny" or msg_lc in ("cancel", "cancelled", "nevermind",
+                                          "never mind"):
+            if invoice_id:
+                _db.update_invoice_status(invoice_id, "rejected", reject_reason="patient cancelled")
+            session["state"] = STATE_BROWSING
+            session["lead"] = {}
+            session["email_asked"] = False
+            reply = ("Booking cancelled — no charge was made. Let me know "
+                     "if you'd like to start over.")
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        status_keywords = ("status", "check", "any update", "confirmed yet",
+                           "did you get", "did you receive")
+        if invoice_id and any(k in msg_lc for k in status_keywords):
+            invoice = _db.get_invoice(invoice_id)
+            inv_status = (invoice or {}).get("status", "pending_proof")
+            if inv_status == "approved":
+                reply = "Good news — your payment was verified and your booking is confirmed. Check your email for the confirmation."
+            elif inv_status == "submitted":
+                reply = "We've received your screenshot and it's waiting for our team to verify it — we'll confirm shortly."
+            elif inv_status == "rejected":
+                reason = (invoice or {}).get("reject_reason", "")
+                reply = ("We weren't able to verify that payment"
+                         + (f" ({reason})" if reason else "")
+                         + f". Please send a clearer screenshot, or contact us — your reference is {invoice['reference']}.")
+            else:
+                reply = f"Still waiting on a payment screenshot for reference {invoice['reference']}."
+            append_history(session, user_message, reply)
+            save_chat_log(session_id, user_message, reply)
+            return response_payload(reply, session)
+
+        # Anything else — re-show the invoice details so they always have
+        # the reference/account number handy, without re-creating a new
+        # invoice (that would orphan the first one).
+        if invoice_id:
+            invoice = _db.get_invoice(invoice_id)
+            if invoice:
+                import payments
+                invoice["_account"] = payments._default_account()
+                reply = payments.format_invoice_message(invoice)
+            else:
+                reply = "I couldn't find your invoice — let's start the booking again."
+                session["state"] = STATE_BROWSING
+                session["lead"] = {}
+        else:
+            reply = await create_payment_invoice(session, source)
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # =====================================================================
     # State: SLOT_PICKING — user is choosing a time from a list
     # =====================================================================
     if state == STATE_SLOT_PICKING:
@@ -2629,6 +3447,7 @@ async def get_ai_response(session_id: str, user_message: str,
         # set this turn) — otherwise let the date+time flow downstream lock
         # the slot directly.
         new_date = new_slots.get("appointment_date")
+        new_date = correct_date_for_named_weekday(user_message, new_date)
         new_time = new_slots.get("appointment_time")
         current_date = lead.get("appointment_date")
         if (new_date and new_date != current_date and not new_time
@@ -2639,7 +3458,8 @@ async def get_ai_response(session_id: str, user_message: str,
             lead["appointment_date"] = new_date
             lead.pop("appointment_time", None)
             reply = await render_slots_for_day(
-                lead["service_id"], new_date
+                lead["service_id"], new_date,
+                language=lead.get("language"),
             )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -2713,7 +3533,8 @@ async def get_ai_response(session_id: str, user_message: str,
         # If the user gave a date but no time, show slots for that date
         if lead.get("appointment_date") and not lead.get("appointment_time"):
             reply = await render_slots_for_day(
-                lead["service_id"], lead["appointment_date"]
+                lead["service_id"], lead["appointment_date"],
+                language=lead.get("language"),
             )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -2739,7 +3560,82 @@ async def get_ai_response(session_id: str, user_message: str,
                 save_chat_log(session_id, user_message, reply)
                 return response_payload(reply, session)
 
-            # Slot locked — figure out next step: location choice or details
+            # Slot locked — multi-visit programs need N dates, not one.
+            # visits_required defaults to 1 for every existing service, so
+            # this block is a no-op for the single-visit flow (it always
+            # falls straight through to "this IS the last/only visit").
+            visits_required = lead.get("visits_required", 1)
+            scheduled = lead.setdefault("scheduled_visits", [])
+            this_visit = {
+                "date": lead["appointment_date"],
+                "time": lead["appointment_time"],
+                "midwife_id": lead.get("midwife_id", ""),
+                "midwife_name": lead.get("midwife_name", ""),
+            }
+
+            if visits_required > 1 and len(scheduled) + 1 < visits_required:
+                # More visits still needed — record this one, clear the
+                # date/time so the next round of slot-picking starts
+                # fresh, and loop back showing the next available days.
+                # midwife_name is deliberately LEFT SET as a preference —
+                # pick_slot_for_lead() already prefers it via
+                # find_slot(preferred_midwife_name=...), so the program
+                # tries to keep the same midwife across every visit
+                # without forcing it if she's unavailable on a later date.
+                scheduled.append(this_visit)
+                visit_num = len(scheduled)
+                try:
+                    nice_date = datetime.strptime(this_visit["date"], "%Y-%m-%d").strftime("%A, %B %d")
+                except (ValueError, TypeError):
+                    nice_date = this_visit["date"]
+                lead.pop("appointment_date", None)
+                lead.pop("appointment_time", None)
+                day_list = await render_next_available_days(
+                    lead["service_id"], service_name=lead.get("service_name", ""),
+                )
+                reply = (
+                    f"Visit {visit_num} of {visits_required} confirmed — "
+                    f"{nice_date} at {this_visit['time']} with "
+                    f"{this_visit['midwife_name'] or 'your midwife'}.\n\n"
+                    f"Now let's schedule visit {visit_num + 1} of {visits_required}:\n\n"
+                    f"{day_list}"
+                )
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+            # This is the last (or only) visit — finalize the full visit
+            # list. For an ordinary single-visit booking this just wraps
+            # the one visit already sitting in appointment_date/time and
+            # changes nothing else below.
+            scheduled.append(this_visit)
+            visit_confirmation_prefix = ""
+            if visits_required > 1:
+                scheduled.sort(key=lambda v: (v["date"], v["time"]))
+                lead["scheduled_visits"] = scheduled
+                first = scheduled[0]
+                lead["appointment_date"] = first["date"]
+                lead["appointment_time"] = first["time"]
+                lead["midwife_id"] = first["midwife_id"]
+                lead["midwife_name"] = first["midwife_name"]
+                # The other visits (1..N-1) already got their own "Visit X
+                # of N confirmed" message further up before looping back
+                # for the next date — without this, the FINAL visit would
+                # silently roll straight into the next question (location
+                # choice / name) with no acknowledgment it was locked in
+                # at all, which reads as if the bot ignored the message.
+                try:
+                    nice_date = datetime.strptime(this_visit["date"], "%Y-%m-%d").strftime("%A, %B %d")
+                except (ValueError, TypeError):
+                    nice_date = this_visit["date"]
+                visit_confirmation_prefix = (
+                    f"Visit {visits_required} of {visits_required} confirmed — "
+                    f"{nice_date} at {this_visit['time']} with "
+                    f"{this_visit['midwife_name'] or 'your midwife'}. "
+                    f"All {visits_required} visits are now scheduled!\n\n"
+                )
+
+            # Figure out next step: location choice or details
             service = next(
                 (s for s in await get_services()
                  if s["service_id"] == lead["service_id"]),
@@ -2750,14 +3646,14 @@ async def get_ai_response(session_id: str, user_message: str,
                 if loc_type in ("clinic_or_home", "clinic_or_online"):
                     if not lead.get("location_type"):
                         session["state"] = STATE_COLLECTING_DETAILS
-                        reply = render_location_choice(lead.get("service_name", "service"))
+                        reply = visit_confirmation_prefix + render_location_choice(lead.get("service_name", "service"))
                         append_history(session, user_message, reply)
                         save_chat_log(session_id, user_message, reply)
                         return response_payload(reply, session)
 
             session["state"] = STATE_COLLECTING_DETAILS
             q = render_next_detail_question(session)
-            reply = q or "Almost done — anything to add?"
+            reply = visit_confirmation_prefix + (q or "Almost done — anything to add?")
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -2780,6 +3676,24 @@ async def get_ai_response(session_id: str, user_message: str,
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
+
+        # Email-skip check MUST run BEFORE the deny handler below. When the
+        # bot is waiting for an email, "skip" / "no" / "no email" are valid
+        # answers to the email prompt (user doesn't want to share one),
+        # NOT booking cancellations. The LLM often classifies "skip" as
+        # deny (because it maps to "no thanks / stop"), so we intercept
+        # here based on context: if awaiting_field is "email", these words
+        # mean "skip this field" not "cancel the whole booking."
+        if (session.get("awaiting_field") == "email"
+                and user_message.lower().strip() in ("skip", "no", "no email",
+                                                     "no thanks", "no thank you",
+                                                     "dont have one", "don't have one",
+                                                     "n/a", "na")):
+            lead["email"] = "skip"
+            # Fall through to the rest of the handler which will advance
+            # to the next detail field (or move to AWAITING_CONFIRM if all
+            # fields collected)
+
         if intent == "deny":
             session["state"] = STATE_BROWSING
             session["lead"] = {}
@@ -2788,11 +3702,6 @@ async def get_ai_response(session_id: str, user_message: str,
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
-
-        # Handle "skip" for email
-        if (session.get("awaiting_field") == "email"
-                and user_message.lower().strip() in ("skip", "no", "no email")):
-            lead["email"] = "skip"
 
         # Handle bare-text answers (name, address)
         awaiting = session.get("awaiting_field")
@@ -2805,9 +3714,34 @@ async def get_ai_response(session_id: str, user_message: str,
             if 5 <= len(text) <= 200:
                 lead["patient_address"] = text
         elif awaiting == "phone" and not valid(lead.get("phone")):
-            digits = re.sub(r"\D", "", user_message)
-            if len(digits) >= 7:
-                lead["phone"] = user_message.strip()
+            candidate_phone = user_message.strip()
+            digits = re.sub(r"\D", "", candidate_phone)
+            # UAE-only, matching the fact that NativaCare only operates in
+            # Abu Dhabi — a plausible-length international number (e.g. a
+            # UK or US mobile) used to be accepted here just because it
+            # was the right number of digits. Now requires an actual UAE
+            # shape: local (0 + 8-9 more digits, e.g. 050XXXXXXX mobile or
+            # 02XXXXXXX Abu Dhabi landline) or international (971 + 8-9
+            # more digits, optionally with a 00 international prefix).
+            normalized = digits[2:] if digits.startswith("00") else digits
+            looks_uae_local = normalized.startswith("0") and 9 <= len(normalized) <= 10
+            looks_uae_intl = normalized.startswith("971") and 11 <= len(normalized) <= 12
+            if looks_uae_local or looks_uae_intl:
+                lead["phone"] = candidate_phone
+            else:
+                phone_rejection_count = session.get("phone_rejection_count", 0) + 1
+                session["phone_rejection_count"] = phone_rejection_count
+                reply = (
+                    f"\"{candidate_phone}\" doesn't look like a UAE phone "
+                    f"number — we currently only serve clients in Abu Dhabi, "
+                    f"so we'll need a UAE mobile or landline number "
+                    f"(e.g. 050 123 4567 or +971 50 123 4567)."
+                )
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+        if lead.get("phone"):
+            session.pop("phone_rejection_count", None)
 
         # Handle location choice. If the user explicitly says "clinic"
         # (or similar) while in home-visit flow, switch — useful when
@@ -2830,11 +3764,23 @@ async def get_ai_response(session_id: str, user_message: str,
             session.pop("address_rejection_count", None)
 
         # Out-of-area address: REJECT and re-prompt instead of accepting.
-        # If the address doesn't contain any Abu Dhabi keyword, clear it
-        # and ask again. After 2 rejections, escalate to phone.
+        # Two checks, in order:
+        #   1. Does it explicitly name a DIFFERENT emirate/city? If so,
+        #      reject outright — this catches "Dubai Marina" even though
+        #      an old, since-removed version of ABU_DHABI_KEYWORDS
+        #      contained the ambiguous word "marina" that would have
+        #      matched it.
+        #   2. Otherwise, does it contain any actual Abu Dhabi area
+        #      keyword? If neither, we don't know where it is — reject
+        #      and ask again rather than guessing.
+        # After 2 rejections, escalate to phone rather than blocking
+        # forever.
         addr = lead.get("patient_address") or ""
-        if (lead.get("location_type") == "home" and addr
-                and not any(k in addr.lower() for k in ABU_DHABI_KEYWORDS)):
+        addr_is_out_of_area = addr and (
+            _address_names_other_emirate(addr)
+            or not any(k in addr.lower() for k in ABU_DHABI_KEYWORDS)
+        )
+        if lead.get("location_type") == "home" and addr_is_out_of_area:
             rejection_count = session.get("address_rejection_count", 0) + 1
             session["address_rejection_count"] = rejection_count
             # Clear the rejected address so we re-collect it
@@ -2973,9 +3919,18 @@ async def get_ai_response(session_id: str, user_message: str,
 
         if lead.get("service_id"):
             # Already-committed service (shouldn't usually happen — service
-            # commits go through CONFIRMING_SERVICE — but kept as a safety net)
-            session["state"] = STATE_SLOT_PICKING
-            reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+            # commits go through CONFIRMING_SERVICE — but kept as a safety net).
+            # If language not yet picked, route through LANGUAGE_PICKING first
+            # (matches the normal flow). Otherwise go straight to slot picking.
+            if not lead.get("language"):
+                session["state"] = STATE_LANGUAGE_PICKING
+                reply = render_language_prompt(lead.get("service_name", ""))
+            else:
+                session["state"] = STATE_SLOT_PICKING
+                reply = await render_next_available_days_by_language(
+                    lead["service_id"], lead["language"],
+                    service_name=lead.get("service_name", ""),
+                )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -3142,9 +4097,16 @@ async def get_ai_response(session_id: str, user_message: str,
 
         if lead.get("service_id"):
             # Existing committed service (e.g. coming back from BOOKED with
-            # preserved fields) — go straight to slot picking.
-            session["state"] = STATE_SLOT_PICKING
-            reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+            # preserved fields). If language not yet picked, ask that first.
+            if not lead.get("language"):
+                session["state"] = STATE_LANGUAGE_PICKING
+                reply = render_language_prompt(lead.get("service_name", ""))
+            else:
+                session["state"] = STATE_SLOT_PICKING
+                reply = await render_next_available_days_by_language(
+                    lead["service_id"], lead["language"],
+                    service_name=lead.get("service_name", ""),
+                )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
