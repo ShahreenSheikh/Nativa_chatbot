@@ -52,3 +52,4 @@ crawl.log
 *.db
 *.db-journal
 /uploads/
+.crawler_cache/
