@@ -1060,6 +1060,55 @@ async def _normalize_understand(d: dict, user_message: str) -> dict:
         cleaned["package_id"] = match["package_id"]
         cleaned["package_name"] = match["package_name"]
 
+    # Disambiguation guard — real bug report: a user typed exactly
+    # "postnatal recovery" (matching the bookable service family shown to
+    # them a message earlier) and the LLM extracted package_name
+    # "Postnatal Recovery Bundle" instead — a real package that exists in
+    # the catalog, but the word "bundle" never appeared anywhere in what
+    # the user actually typed. The LLM had both a same-named service
+    # family and a similarly-named package in its context and picked the
+    # wrong one; _normalize_understand only validated that the proposed
+    # package NAME exists somewhere in the catalog, never whether it was
+    # actually the better match for the raw text.
+    #
+    # Fix: if the user's raw message is an exact (or near-exact) match for
+    # a bookable service or service FAMILY name, and the LLM also
+    # proposed a package that ISN'T that same literal text, prefer the
+    # service — a verbatim match to real bookable-service text is a much
+    # stronger signal than an LLM's package guess, especially when the
+    # package name contains extra words (like "Bundle") the user never
+    # typed at all.
+    if cleaned.get("package_id"):
+        msg_norm = re.sub(r"[^a-z0-9 ]", "", (user_message or "").lower()).strip()
+        # Prefer an actually-bookable family member for the fallback —
+        # a family can have sheet rows for a variant nobody's staffed to
+        # deliver yet, and picking one of those as the "representative"
+        # here would just walk the user into a dead end a few turns
+        # later instead of into real, bookable options.
+        bookable = await bookable_services()
+        bookable_ids = {s["service_id"] for s in bookable}
+        family_names = {
+            (s.get("family_name") or "").lower(): s
+            for s in services
+            if s.get("family_name") and s["service_id"] in bookable_ids
+        }
+        exact_service_match = svc_by_name.get(msg_norm)
+        if exact_service_match and exact_service_match["service_id"] not in bookable_ids:
+            exact_service_match = None  # same reasoning — don't fall back to an unbookable single service either
+        exact_family_match = family_names.get(msg_norm)
+        if (exact_service_match or exact_family_match) and msg_norm != cleaned["package_name"].lower():
+            _debug_event(
+                f"Disambiguation: LLM proposed package "
+                f"{cleaned['package_name']!r} but raw text {user_message!r} "
+                f"exactly matches a bookable service/family instead — "
+                f"preferring the service, dropping the package guess."
+            )
+            cleaned.pop("package_id", None)
+            cleaned.pop("package_name", None)
+            representative = exact_service_match or exact_family_match
+            cleaned["service_id"] = representative["service_id"]
+            cleaned["service_name"] = representative["service_name"]
+
     # date
     date_v = slots.get("appointment_date")
     if isinstance(date_v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_v):
@@ -2915,7 +2964,14 @@ async def get_ai_response(session_id: str, user_message: str,
                 # program, etc.) — if so, the user needs to pick a specific
                 # tier first, rather than us silently booking whichever
                 # variant happened to be the LLM's representative pick.
-                all_services = await get_services()
+                #
+                # Uses bookable_services() (already filtered to services
+                # with an active midwife assigned), NOT the raw
+                # get_services() — otherwise a family with, say, 2 sheet
+                # rows but only 1 actually staffed would still show BOTH
+                # as pickable options, letting someone select a tier
+                # nobody can actually deliver.
+                all_services = await bookable_services()
                 matched_service = next(
                     (s for s in all_services if s["service_id"] == proposed_svc_id),
                     None,
@@ -3017,7 +3073,12 @@ async def get_ai_response(session_id: str, user_message: str,
     # =====================================================================
     if state == STATE_VARIANT_PICKING:
         family_name = session.get("variant_family", "")
-        all_services = await get_services()
+        # Same fix as the staging block above — must use bookable_services()
+        # here too, since this is the code that actually resolves the
+        # user's typed choice against the option list. Using the
+        # unfiltered list would let someone select a tier with no midwife
+        # assigned to it.
+        all_services = await bookable_services()
         variants = resolve_family_variants(all_services, family_name)
 
         if intent == "deny" or msg_lower.strip() in ("cancel", "nevermind", "never mind"):
@@ -3080,7 +3141,47 @@ async def get_ai_response(session_id: str, user_message: str,
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
 
-        # ----- Deny + alternative: cancel candidate, ask what they want -----
+        # ----- Variant switch: user is trying to switch tiers, not just
+        # confirm/deny (e.g. confirming "Half Day" but replying "actually
+        # full day") -----
+        # This was a real gap: neither "full day" alone nor "3 visits"
+        # alone is real catalog text the understand() LLM call would ever
+        # extract as a service_name (only the FAMILY name, e.g. "Nanny
+        # Training", appears in its catalog) — so a bare tier-switch
+        # attempt fell through every check below with nothing recognizing
+        # it, and the user got the exact same "please confirm X" message
+        # right back, stuck confirming the option they were trying to
+        # change. Checked before the deny/confirm logic since a
+        # correction like this isn't really a "no" either.
+        cand = session.get("candidate_service") or {}
+        cand_family = ""
+        if cand.get("service_id"):
+            bookable_for_switch = await bookable_services()
+            cand_service = next(
+                (s for s in bookable_for_switch if s["service_id"] == cand["service_id"]), None,
+            )
+            cand_family = (cand_service or {}).get("family_name") or ""
+        if cand_family:
+            family_variants = resolve_family_variants(bookable_for_switch, cand_family)
+            if len(family_variants) > 1:
+                switch_match = match_variant(user_message, family_variants)
+                if switch_match and switch_match["service_id"] != cand["service_id"]:
+                    _debug_event(
+                        f"Variant switch in CONFIRMING_SERVICE: "
+                        f"{cand.get('service_name')} -> {switch_match['service_name']}"
+                    )
+                    session["candidate_service"] = {
+                        "service_id": switch_match["service_id"],
+                        "service_name": switch_match["service_name"],
+                    }
+                    reply = await render_service_confirmation(
+                        switch_match["service_id"], switch_match["service_name"]
+                    )
+                    append_history(session, user_message, reply)
+                    save_chat_log(session_id, user_message, reply)
+                    return response_payload(reply, session)
+
+
         # "No, [something else]" should NOT silently re-show the current
         # confirmation. If we have a clear new candidate from the LLM,
         # the re-confirm branch below handles it. Otherwise, acknowledge
