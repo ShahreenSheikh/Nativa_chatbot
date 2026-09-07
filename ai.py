@@ -1216,13 +1216,22 @@ async def _build_compose_context(intent: str, slots: dict,
     need_midwives = intent in ("midwife_list", "midwife_question", "general")
     need_packages = intent in ("package_question", "price_question", "general", "service_list")
     need_faqs = intent in ("faq", "general")
+    # Only show actual prices when the user specifically asked about
+    # price — for a general "what services do you offer" browse, prices
+    # (and any hint of tiers/variants existing) are deliberately withheld
+    # entirely so there's nothing for the model to leak. This was a real
+    # bug: even with an instruction saying "don't mention the other tiers'
+    # prices", the model still had a representative price sitting in its
+    # context and used it anyway. Not giving it the data at all is a much
+    # more reliable fix than asking it not to use data it can see.
+    show_prices_in_list = intent == "price_question"
 
     # Always include the bookable-service list, even on intents that don't
     # need details — this way the LLM knows what we CAN'T offer if asked.
     bookable = await bookable_services()
     bookable_names = {s["service_name"] for s in bookable}
     parts.append("\nBookable services (only these can be booked):")
-    if need_services:
+    if need_services and show_prices_in_list:
         # Group tier variants (e.g. Nanny Training "Half Day"/"Full Day")
         # under one line so the initial list doesn't overwhelm the user
         # with every combination up front — the specific tiers get shown
@@ -1245,6 +1254,22 @@ async def _build_compose_context(intent: str, slots: dict,
                     f"{s.get('duration_minutes', '?')} min, "
                     f"location: {s.get('location_type', '')}"
                 )
+    elif need_services:
+        # General browsing (service_list / general / faq intents, NOT a
+        # specific price question) — name and a one-line description only.
+        # No price, no duration, no mention that tiers/variants exist at
+        # all. Full details (and, for a grouped family, the specific
+        # tier choices) only appear once the user actually picks a
+        # service — see render_service_confirmation / render_variant_choice.
+        for s in group_services_by_family(bookable):
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                parts.append(f"- {s['service_name']}: {first_sentence}")
+            else:
+                parts.append(f"- {s['service_name']}")
     else:
         # Compact list, just names — so the LLM can recognize what's offered
         # without bloating the prompt.
@@ -1613,6 +1638,99 @@ def resolve_family_variants(services: list, family_name: str) -> list:
     every service row that belongs to it (for showing the actual tier
     choices once a family has been picked)."""
     return [s for s in services if (s.get("family_name") or "") == family_name]
+
+
+_ORDINAL_WORDS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+}
+# Deliberately NOT including bare cardinal words ("one", "two", "three"...)
+# — "one" in particular is a common English filler/pronoun ("the third
+# ONE", "which ONE", "that ONE") far more often than it's actually used
+# as a number. Including it caused "the third one" to match position 1
+# (from "one") before ever reaching "third", since dict iteration found
+# "one" first. A bare digit ("1", "2", "3"...) is still handled
+# separately below and covers the same real use case without the
+# ambiguity.
+
+
+def match_variant(user_message: str, variants: list) -> Optional[dict]:
+    """Resolve a user's free-text reply to one specific variant, given the
+    options shown by render_variant_choice(). Rewritten after a real bug
+    report: a message like "4 sessions" failed to match a label like
+    "Signature Course (4 sessions)" two different ways at once —
+    (1) the old exact-match check only tested whether the FULL LABEL was
+    contained in the message, never the reverse (a short reply is often a
+    fragment OF the longer label, not the other way around), and
+    (2) the old word-fallback used bare substring checks, so the word
+    "session" (from "Single Session") false-matched inside "sessions"
+    (from the message) — a plural containing a singular as a substring is
+    not the same word. This version fixes both, adds digits as matchable
+    tokens (so "4" itself can disambiguate), and adds explicit
+    ordinal/positional matching ("the third one", "option 2", a bare "3")
+    as a final fallback rather than depending on the LLM to have already
+    resolved that upstream.
+    """
+    if not variants:
+        return None
+    msg_lower = (user_message or "").lower().strip()
+    if not msg_lower:
+        return None
+
+    labels = [(v, (v.get("variant_label") or v.get("service_name") or "").lower()) for v in variants]
+
+    # 1. Bidirectional exact-label substring match — catches both "the
+    #    full label was typed" and "a fragment of the label was typed".
+    for v, label in labels:
+        if label and (label in msg_lower or msg_lower in label):
+            return v
+
+    # 2. Word-boundary distinctive-word match. \b...\b prevents "session"
+    #    (from "Single Session") from false-matching inside "sessions"
+    #    (from the message) — regex now includes digits too, so a bare
+    #    "4" can be the deciding token when that's genuinely what's
+    #    distinctive between two options. Single-digit tokens ("4", "5")
+    #    are explicitly allowed through the length filter even though
+    #    it's normally >1 — for a family like "3-Visit Program" vs
+    #    "5-Visit Program", the NUMBER is usually the actual distinguishing
+    #    signal (not "visit" vs "visits", which is the same word in both
+    #    labels and shouldn't be relied on to disambiguate at all).
+    word_counts: dict = {}
+    for _, label in labels:
+        for w in set(re.findall(r"[a-z0-9]+", label)):
+            if len(w) > 1 or w.isdigit():
+                word_counts[w] = word_counts.get(w, 0) + 1
+    distinctive_words = {w for w, count in word_counts.items() if count == 1}
+    for v, label in labels:
+        label_words = {w for w in re.findall(r"[a-z0-9]+", label) if len(w) > 1 or w.isdigit()}
+        for w in label_words:
+            if w in distinctive_words and re.search(r"\b" + re.escape(w) + r"\b", msg_lower):
+                return v
+
+    # 3. Ordinal / positional fallback — "the third one", "option 2",
+    #    "number 1", or a bare digit like "3". Position is 1-indexed in
+    #    what the user typed, matching the order variants were listed in
+    #    render_variant_choice (same order as `variants` here).
+    stripped = msg_lower.strip(" .!")
+    if stripped.isdigit():
+        idx = int(stripped) - 1
+        if 0 <= idx < len(variants):
+            return variants[idx]
+
+    for word, idx in _ORDINAL_WORDS.items():
+        if re.search(r"\b" + re.escape(word) + r"\b", msg_lower) and idx < len(variants):
+            return variants[idx]
+
+    option_match = re.search(r"\b(?:option|number|choice)\s*#?\s*(\d+)\b", msg_lower)
+    if option_match:
+        idx = int(option_match.group(1)) - 1
+        if 0 <= idx < len(variants):
+            return variants[idx]
+
+    return None
 
 
 async def render_service_menu() -> str:
@@ -2910,45 +3028,13 @@ async def get_ai_response(session_id: str, user_message: str,
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
 
-        # Match the user's reply against each variant's label/name. Two
-        # passes: first look for an EXACT label match as a substring
-        # ("full day" in "full day please, yes"), which is unambiguous.
-        # Only fall back to individual-word matching if no full label
-        # matched, and even then, exclude words shared by 2+ variants in
-        # this family ("day" appears in both "Half Day" and "Full Day" —
-        # matching on it alone can't tell them apart, and matching
-        # whichever variant happens to be checked first, as an earlier
-        # version of this code did, silently picks the wrong one).
-        matched = None
-        labels = [(v, (v.get("variant_label") or v.get("service_name") or "").lower()) for v in variants]
-
-        for v, label in labels:
-            if label and label in msg_lower:
-                matched = v
-                break
-
-        if not matched:
-            word_counts: dict = {}
-            for _, label in labels:
-                for w in set(re.findall(r"[a-z]+", label)):
-                    if len(w) > 2:
-                        word_counts[w] = word_counts.get(w, 0) + 1
-            distinctive_words = {w for w, count in word_counts.items() if count == 1}
-            for v, label in labels:
-                label_words = {w for w in re.findall(r"[a-z]+", label) if len(w) > 2}
-                if any(w in distinctive_words and w in msg_lower for w in label_words):
-                    matched = v
-                    break
-
-        if not matched and len(variants) > 0:
-            # Fall back: a bare number ("1", "2") picks by position, since
-            # some users will just reply with the option number even
-            # though we didn't explicitly number them.
-            stripped = msg_lower.strip()
-            if stripped.isdigit():
-                idx = int(stripped) - 1
-                if 0 <= idx < len(variants):
-                    matched = variants[idx]
+        # Resolve the user's reply to a specific variant — see
+        # match_variant()'s docstring for the real bugs this replaced
+        # (a directional substring-match miss, and "session" false-
+        # matching inside "sessions"). This one function now also
+        # understands ordinals ("the third one") and "option N" phrasing
+        # directly, instead of only a bare digit.
+        matched = match_variant(user_message, variants)
 
         if not matched:
             reply = await render_variant_choice(family_name, variants)
