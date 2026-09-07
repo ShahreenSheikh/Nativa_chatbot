@@ -3302,6 +3302,40 @@ async def get_ai_response(session_id: str, user_message: str,
                     save_chat_log(session_id, user_message, reply)
                     return response_payload(reply, session)
 
+        # ----- Cross-family switch via a bare partial name: user is
+        # confirming one service but types a short reference to a
+        # DIFFERENT family entirely (e.g. confirming Antenatal, replies
+        # just "postnatal" — not the full "postnatal recovery" the
+        # catalog uses, so the LLM's understand() call has nothing to
+        # extract a service_name from, and it fell through to nothing at
+        # all: no acknowledgment, the exact same confirmation message
+        # just repeated back verbatim). Only fires on a real, distinctive
+        # word (4+ letters) that's an unambiguous prefix match for
+        # exactly ONE family — short/generic fragments intentionally
+        # don't trigger this, to avoid guessing wrong on a genuinely
+        # unclear reply.
+        msg_stripped = re.sub(r"[^a-z ]", "", (user_message or "").lower()).strip()
+        if len(msg_stripped) >= 4 and " " not in msg_stripped:
+            all_bookable = await bookable_services()
+            all_families = {s.get("family_name") for s in all_bookable if s.get("family_name")}
+            prefix_hits = [
+                f for f in all_families
+                if f.lower().startswith(msg_stripped) and f != cand_family
+            ]
+            if len(prefix_hits) == 1:
+                target_family = prefix_hits[0]
+                target_variants = resolve_family_variants(all_bookable, target_family)
+                _debug_event(
+                    f"Cross-family switch in CONFIRMING_SERVICE via bare "
+                    f"prefix {user_message!r} -> family {target_family!r}"
+                )
+                session["variant_family"] = target_family
+                session["state"] = STATE_VARIANT_PICKING
+                reply = await render_variant_choice(target_family, target_variants)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
 
         # "No, [something else]" should NOT silently re-show the current
         # confirmation. If we have a clear new candidate from the LLM,
