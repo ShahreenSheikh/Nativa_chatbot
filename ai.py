@@ -1396,6 +1396,13 @@ async def _build_compose_context(intent: str, slots: dict,
 async def compose_reply(session: dict, user_message: str,
                         understanding: dict) -> str:
     """LLM call 2 — friendly reply using targeted DB slice."""
+    # Deterministic fast-path for "what services do you offer" specifically
+    # — see render_service_browse_list()'s docstring for why this bypasses
+    # the LLM entirely for this one intent rather than continuing to rely
+    # on prompt instructions the model didn't reliably follow.
+    if understanding.get("intent") == "service_list":
+        return await render_service_browse_list()
+
     if not client:
         return ("I can help with services, prices, midwives, packages, "
                 "or bookings. What would you like to know?")
@@ -1801,6 +1808,57 @@ def match_variant(user_message: str, variants: list) -> Optional[dict]:
             return variants[idx]
 
     return None
+
+
+async def render_service_browse_list() -> str:
+    """Deterministic 'what services do you offer' reply — name + a short
+    description per service, grouped families collapsed to one line
+    (e.g. "Nanny Training", not "Nanny Training (Half Day)"), no prices
+    or tier counts shown at this stage.
+
+    This exists because compose_reply()'s LLM-composed version of this
+    same answer kept drifting back to showing a specific variant's full
+    name despite the prompt explicitly saying not to — a real, repeated
+    bug, not a hypothetical: the underlying data and prompt were both
+    already correct, the LLM free-text generation just didn't reliably
+    follow the instruction every time. Rather than continue tuning the
+    prompt, this makes the one specific, well-defined case ("service_list"
+    intent — literally "what do you offer") fully deterministic Python
+    instead, the same way render_service_menu() already is for the
+    booking-trigger menu. Broader intents ("general", "faq",
+    "price_question") still go through the LLM, since those legitimately
+    need its flexibility to handle open-ended follow-ups."""
+    services = await bookable_services()
+    if not services:
+        return ("I'm having trouble loading the service list. Please call us "
+                "at +971 50 729 7197.")
+    lines = ["We offer the following services:\n"]
+    display_services = group_services_by_family(services)
+    by_cat: dict = {}
+    for s in display_services:
+        by_cat.setdefault(s.get("category", "Other"), []).append(s)
+    show_headers = len(by_cat) > 1
+    for cat in by_cat:
+        if show_headers:
+            lines.append(f"{cat}:")
+        for s in by_cat[cat]:
+            lines.append(f"- **{s['service_name']}**")
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                lines.append(f"  {first_sentence}")
+        lines.append("")
+
+    packages = await get_packages()
+    if packages:
+        names = ", ".join(p["package_name"] for p in packages[:5])
+        lines.append(
+            f"We also have bundled packages ({names}) that combine several "
+            f"services. Feel free to ask about any of them!"
+        )
+    return "\n".join(lines).strip()
 
 
 async def render_service_menu() -> str:
