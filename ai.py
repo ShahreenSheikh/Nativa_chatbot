@@ -1505,18 +1505,40 @@ def llm_error_reply(session: dict, err: Exception) -> str:
 async def render_variant_choice(family_name: str, variants: list) -> str:
     """Shown when a picked service turns out to have multiple tiers (half
     day/full day, single visit/3-visit program, etc.) — lists the actual
-    options with their real prices/durations so the user can pick one
-    before moving into the normal single-service confirmation flow."""
-    lines = [f"{family_name} has a few options:"]
+    options with their real prices/durations AND a short description so
+    the user can actually tell what they're choosing between, not just
+    see a bare price/duration line, before moving into the normal
+    single-service confirmation flow.
+
+    Uses the full service_name (e.g. "Nanny Training (Half Day)") as the
+    display label rather than the bare variant_label ("Half Day") — the
+    bare label reads as ambiguous on its own once it's separated from the
+    "Nanny Training has a few options:" header above it. variant_label
+    is still what the matching logic in the state handler keys off of;
+    this only changes what's SHOWN."""
+    lines = [f"{family_name} has a few options:\n"]
     for v in variants:
-        label = v.get("variant_label") or v.get("service_name", "")
+        label = v.get("service_name") or v.get("variant_label", "")
         price = v.get("default_price_aed", "?")
         duration = v.get("duration_minutes", "")
         visits = v.get("visits_required", "")
         extra = f", {visits} visits" if visits and str(visits) not in ("", "1") else ""
         duration_str = f", {duration} min" if duration else ""
-        lines.append(f"  • {label} — AED {price}{duration_str}{extra}")
-    lines.append("\nWhich would you like?")
+        lines.append(f"• {label} — AED {price}{duration_str}{extra}")
+
+        desc = (v.get("short_desc") or v.get("description") or "").strip()
+        if desc:
+            # Keep it to roughly one sentence — this is a quick comparison
+            # view, not the full service description (that's already
+            # shown later, in render_service_confirmation, once a
+            # specific variant is picked).
+            first_sentence = desc.split(". ")[0].rstrip(".") + "."
+            if len(first_sentence) > 140:
+                first_sentence = first_sentence[:137].rsplit(" ", 1)[0] + "..."
+            lines.append(f"  {first_sentence}")
+        lines.append("")  # blank line between options for readability
+
+    lines.append("Which would you like?")
     return "\n".join(lines)
 
 
