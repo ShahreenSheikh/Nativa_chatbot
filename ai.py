@@ -3219,6 +3219,44 @@ async def get_ai_response(session_id: str, user_message: str,
         matched = match_variant(user_message, variants)
 
         if not matched:
+            # Cross-family switch: user is trying to switch to a
+            # DIFFERENT family entirely while picking a tier for this
+            # one (e.g. picking an Antenatal tier, replies "nanny
+            # training" — or even "none of these i want to get nanny
+            # training"). Real, confirmed bug: neither case was being
+            # caught here at all — the STAGING block one layer up
+            # apparently doesn't reliably catch this either in practice,
+            # so this needs its own direct, deterministic check rather
+            # than assuming that layer handles it. Checks two ways: the
+            # other family's full name appearing anywhere in the message
+            # (catches "none of these i want to get nanny training"), or
+            # — for a bare short reply with nothing else in it — an
+            # unambiguous prefix match, same heuristic used for the
+            # equivalent fix in CONFIRMING_SERVICE.
+            all_bookable = await bookable_services()
+            all_families = {s.get("family_name") for s in all_bookable if s.get("family_name")}
+            other_families = [f for f in all_families if f and f != family_name]
+            switch_target = next(
+                (f for f in other_families if f.lower() in msg_lower), None,
+            )
+            if not switch_target:
+                msg_stripped = re.sub(r"[^a-z ]", "", msg_lower).strip()
+                if len(msg_stripped) >= 4 and " " not in msg_stripped:
+                    prefix_hits = [f for f in other_families if f.lower().startswith(msg_stripped)]
+                    if len(prefix_hits) == 1:
+                        switch_target = prefix_hits[0]
+            if switch_target:
+                _debug_event(
+                    f"Cross-family switch in VARIANT_PICKING: "
+                    f"{family_name!r} -> {switch_target!r} via {user_message!r}"
+                )
+                target_variants = resolve_family_variants(all_bookable, switch_target)
+                session["variant_family"] = switch_target
+                reply = await render_variant_choice(switch_target, target_variants)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
             reply = await render_variant_choice(family_name, variants)
             reply = "Sorry, I didn't catch which one — " + reply[0].lower() + reply[1:]
             append_history(session, user_message, reply)
