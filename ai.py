@@ -423,13 +423,34 @@ async def _record_recommended_services(session: dict, reply_text: str):
 
     Also records mentioned packages under `last_mentioned_packages` so
     that 'book it' after a package discussion is recognized as a
-    package-booking attempt (and routed to phone-redirect)."""
+    package-booking attempt (and routed to phone-redirect).
+
+    Checks FAMILY names (e.g. "Antenatal Preparation") as well as
+    individual service names (e.g. "Antenatal Preparation & Education")
+    — a real bug, not a hypothetical: once general-browsing replies
+    started using the short family name instead of a specific variant's
+    full name (see the "hide prices/tiers on first mention" change),
+    this function never matched anything for a family-grouped service at
+    all, since it only ever checked individual real service_name strings
+    as substrings. "book it" right after the bot described a family by
+    name then had nothing to resume, and fell through to the generic
+    full-menu prompt instead — which is exactly what a patient going
+    "postnatal recovery" -> "antenatal" -> "book it" would have hit."""
     if not reply_text:
         return
     services = await get_services()
     text_lc = reply_text.lower()
     mentioned = []
+    matched_families = set()
     for s in services:
+        family = s.get("family_name") or ""
+        if family and family.lower() in text_lc and family not in matched_families:
+            matched_families.add(family)
+            mentioned.append({
+                "service_id": s["service_id"],  # a real member of the family —
+                "service_name": family,          # good enough to resolve the family later
+            })
+            continue
         name = s.get("service_name", "")
         if not name or len(name) < 4:
             continue
@@ -1790,16 +1811,34 @@ async def render_service_menu() -> str:
     lines = ["Which service would you like to book?"]
     # Group by category for readability, and collapse tier variants
     # (half day/full day, single-visit/3-visit/5-visit, etc.) into one
-    # line per family so this menu doesn't list near-duplicates.
+    # line per family so this menu doesn't list near-duplicates. Each
+    # line also gets a short description now — price/duration/tier
+    # choices only appear once a specific service is actually picked
+    # (render_service_confirmation for a standalone service, or
+    # render_variant_choice for a family), matching the same
+    # "name + description first, details after" pattern used in the
+    # general-browsing compose reply and the variant picker.
     display_services = group_services_by_family(services)
     by_cat: dict = {}
     for s in display_services:
         by_cat.setdefault(s.get("category", "Other"), []).append(s)
+    # Only show category headers when there's genuinely more than one —
+    # with no "category" column filled in on the sheet, everything falls
+    # under the generic "Other" default, and a single "Other:" header
+    # just adds noise without grouping anything meaningfully.
+    show_headers = len(by_cat) > 1
     for cat in by_cat:
-        lines.append(f"\n{cat}:")
+        if show_headers:
+            lines.append(f"\n{cat}:")
         for s in by_cat[cat][:8]:
             suffix = " (multiple options)" if s.get("_variant_count", 1) > 1 else ""
             lines.append(f"  • {s['service_name']}{suffix}")
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                lines.append(f"    {first_sentence}")
     return "\n".join(lines)
 
 
@@ -1962,10 +2001,34 @@ async def enter_service_confirmation(session: dict, service_id: str,
                                       service_name: str) -> str:
     """Move the session into CONFIRMING_SERVICE state with the given
     candidate. The service is NOT yet committed to lead — that happens
-    only after the user says yes."""
+    only after the user says yes.
+
+    Family-aware: if service_id belongs to a family with multiple
+    bookable tiers, routes into VARIANT_PICKING instead of jumping
+    straight to a single-service confirmation. This matters because this
+    function has several callers beyond the main staging block (e.g. the
+    "book it" resumption path after a general/FAQ answer, and "book
+    <name>" direct extraction) — without this check here too, those
+    paths would silently confirm whichever ONE family member happened to
+    be on hand instead of asking which tier the user actually wants."""
     # Defensive: don't enter confirmation for an unbookable service.
     if not await is_service_bookable(service_id):
         return await render_unbookable_service_message(service_id, service_name)
+
+    bookable = await bookable_services()
+    matched = next((s for s in bookable if s["service_id"] == service_id), None)
+    family_name = (matched or {}).get("family_name") or ""
+    if family_name:
+        variants = resolve_family_variants(bookable, family_name)
+        if len(variants) > 1:
+            session["variant_family"] = family_name
+            session["state"] = STATE_VARIANT_PICKING
+            _debug_event(
+                f"enter_service_confirmation: {service_name} belongs to "
+                f"family '{family_name}' with {len(variants)} variants — "
+                f"routing to VARIANT_PICKING instead of a direct confirm."
+            )
+            return await render_variant_choice(family_name, variants)
 
     session["candidate_service"] = {
         "service_id": service_id,
