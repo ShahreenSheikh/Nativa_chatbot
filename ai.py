@@ -4671,7 +4671,32 @@ async def get_ai_response(session_id: str, user_message: str,
             # below, since this exact message already had a correct,
             # specific meaning handled right here.
 
-        if intent == "deny" and not skipped_email_field:
+        # SAME bug, different spot — found via a real test transcript
+        # that lost an entire completed 3-visit booking. When every
+        # required field is already collected, render_next_detail_
+        # question() explicitly sets awaiting_field = None and the user
+        # is shown a generic "Almost done — anything to add?" catch-all.
+        # A plain "nope" / "no" / "nothing" there is an extremely
+        # ordinary, expected answer meaning "no, proceed" — not a
+        # cancellation — but with no field-specific context to check
+        # against, it fell straight through to the same blanket
+        # intent=="deny" branch below and wiped out a booking that had
+        # just been fully, correctly completed. Mirrors the email-skip
+        # fix: recognize this specific "nothing to add" phrasing when
+        # awaiting_field is None (meaning ready_for_summary() is already
+        # true) and treat it as "proceed", not "cancel".
+        skipped_nothing_to_add = False
+        if (session.get("awaiting_field") is None
+                and ready_for_summary(session)
+                and user_message.lower().strip() in (
+                    "no", "nope", "nothing", "none", "no thanks",
+                    "no thank you", "nothing else", "nothing to add",
+                    "that's all", "thats all", "all good", "n/a", "na")):
+            skipped_nothing_to_add = True
+            # Fall through — the code below this block will see
+            # ready_for_summary() is true and move to AWAITING_CONFIRM.
+
+        if intent == "deny" and not skipped_email_field and not skipped_nothing_to_add:
             session["state"] = STATE_BROWSING
             session["lead"] = {}
             session["email_asked"] = False
