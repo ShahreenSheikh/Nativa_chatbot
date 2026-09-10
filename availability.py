@@ -328,11 +328,40 @@ async def get_availability(
     except (TypeError, ValueError):
         buffer_min = 15
 
-    # If date == today, drop slots starting in the past
+    # If date == today, drop slots starting in the past — and don't let
+    # the earliest one be "literally this exact minute" either.
+    #
+    # BUGFIX: this used to be exactly now.hour*60+now.minute, with no
+    # rounding and no lead time — a real, confirmed problem in a live
+    # test transcript. It produced two distinct, connected bugs:
+    #   1. Odd-looking slot times (14:12, 14:42, 15:12 — always some
+    #      granularity step from whatever minute the code happened to
+    #      run at) instead of clean, expected boundaries like 14:30,
+    #      15:00 — see _slots_in_interval()'s `aligned = max(aligned,
+    #      earliest_start)`, which took this raw value as-is without
+    #      re-rounding.
+    #   2. A SAME-DAY slot shown to a user could become invalid within
+    #      literally a couple of minutes — by the time they'd finished
+    #      picking a language, entering their name/phone/email/address,
+    #      and hit "yes" to confirm, "now" had advanced past the exact
+    #      minute the slot was anchored to, and the re-validation check
+    #      at commit correctly (but unhelpfully) said the slot was gone
+    #      — even though nothing about the schedule had actually
+    #      changed. A real transcript hit exactly this: a fully, freshly
+    #      re-confirmed 3-visit booking failed re-validation seconds
+    #      after being scheduled.
+    # Fix: round up to the next granularity boundary, AND require a
+    # minimum lead time before a same-day slot can be booked at all —
+    # a home visit can't start in the next couple of minutes regardless,
+    # so this also matches how the service actually works in practice.
+    MIN_LEAD_TIME_MINUTES = 60
     earliest_start = 0
     if on_date == today:
         now = datetime.now()
-        earliest_start = now.hour * 60 + now.minute
+        now_minutes = now.hour * 60 + now.minute
+        earliest_start = now_minutes + MIN_LEAD_TIME_MINUTES
+        if granularity > 0 and earliest_start % granularity != 0:
+            earliest_start += granularity - (earliest_start % granularity)
 
     # Find midwives qualified for this service
     qualifying_ids = {
