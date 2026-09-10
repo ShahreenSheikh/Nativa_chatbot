@@ -1930,6 +1930,9 @@ async def group_services_by_family(services: list) -> list:
             # wins if both are somehow set, since that's the field
             # specifically meant for this representative-level view.
             cat_desc = parent.get("category_description") or ""
+            print(f"[Grouping] parent found for {family!r} — "
+                  f"category_description={cat_desc!r} "
+                  f"(full parent row keys/values: {parent})")
             if cat_desc:
                 representative["short_desc"] = cat_desc
                 representative["description"] = cat_desc
@@ -1958,6 +1961,31 @@ async def group_services_by_family(services: list) -> list:
         grouped.append(representative)
 
     return standalone + grouped
+
+
+def is_uae_phone(candidate_phone: str) -> bool:
+    """True if candidate_phone looks like a genuine UAE number (local,
+    e.g. 050XXXXXXX / 02XXXXXXX, or international, 971 + 8-9 more digits,
+    optionally with a 00 prefix).
+
+    Extracted into its own function so it can be applied consistently
+    everywhere a phone number gets accepted — a real, confirmed bug this
+    fixes: this exact validation already existed, but only inside the
+    STATE_COLLECTING_DETAILS bare-text fallback path (when the LLM
+    couldn't confidently extract a phone slot and this fell back to
+    "just try the raw text"). The much MORE common path — the LLM
+    directly extracting a phone-shaped value straight into the `phone`
+    slot — went through the generic slot-assignment loop instead, which
+    applied zero validation at all. A live test confirmed this exactly:
+    "124567890" (not a valid UAE number in any sense) was accepted
+    without a single word of pushback."""
+    if not candidate_phone:
+        return False
+    digits = re.sub(r"\D", "", candidate_phone)
+    normalized = digits[2:] if digits.startswith("00") else digits
+    looks_uae_local = normalized.startswith("0") and 9 <= len(normalized) <= 10
+    looks_uae_intl = normalized.startswith("971") and 11 <= len(normalized) <= 12
+    return looks_uae_local or looks_uae_intl
 
 
 def is_category_parent(service: dict) -> bool:
@@ -2330,6 +2358,40 @@ async def enter_service_confirmation(session: dict, service_id: str,
     <name>" direct extraction) — without this check here too, those
     paths would silently confirm whichever ONE family member happened to
     be on hand instead of asking which tier the user actually wants."""
+    # Category-parent check happens BEFORE the is_service_bookable guard
+    # below, deliberately — a parent row is CORRECTLY "not bookable"
+    # itself (is_service_bookable would say no, since it has no
+    # midwife_services link on purpose), but that doesn't mean there's
+    # nothing to offer; its real bookable children are what we actually
+    # want to show. Checking bookability first would reject a parent ID
+    # immediately and never reach this logic at all — confirmed as the
+    # actual bug: picking a parent category by name went straight to
+    # trying to confirm the parent itself (blank price, blank duration)
+    # instead of ever getting here.
+    all_services = await get_services()
+    parent_row = next(
+        (s for s in all_services
+         if s["service_id"] == service_id and is_category_parent(s)),
+        None,
+    )
+    if parent_row:
+        bookable = await bookable_services()
+        parent_name = parent_row.get("service_name", "")
+        variants = resolve_family_variants(bookable, parent_name)
+        if variants:
+            session["variant_family"] = parent_name
+            session["state"] = STATE_VARIANT_PICKING
+            _debug_event(
+                f"enter_service_confirmation: {service_id} is a category "
+                f"PARENT ('{parent_name}') with {len(variants)} bookable "
+                f"children — routing to VARIANT_PICKING instead of "
+                f"trying to confirm the parent itself."
+            )
+            return await render_variant_choice(parent_name, variants)
+        # Parent has no bookable children at all — genuinely nothing to
+        # offer, so this IS correctly unbookable.
+        return await render_unbookable_service_message(service_id, parent_name)
+
     # Defensive: don't enter confirmation for an unbookable service.
     if not await is_service_bookable(service_id):
         return await render_unbookable_service_message(service_id, service_name)
@@ -2337,6 +2399,7 @@ async def enter_service_confirmation(session: dict, service_id: str,
     bookable = await bookable_services()
     matched = next((s for s in bookable if s["service_id"] == service_id), None)
     family_name = (matched or {}).get("family_name") or ""
+
     if family_name:
         variants = resolve_family_variants(bookable, family_name)
         if len(variants) > 1:
@@ -2514,15 +2577,77 @@ async def _refresh_midwife_lang_cache():
     }
 
 
+def _multi_visit_constraints(lead: dict) -> tuple:
+    """For a multi-visit program (visits_required > 1) where at least one
+    visit is already scheduled, returns (preferred_midwife_id,
+    exclude_datetime_pairs) to apply when showing availability for the
+    NEXT visit. Returns (None, set()) for a single-visit booking or the
+    very first visit of a multi-visit one (nothing to constrain against
+    yet).
+
+    Fixes two real, confirmed bugs found in a live test transcript:
+
+    1. Double-booking: visit 2 of a 3-visit program was shown (and let
+       the user pick) the exact same midwife+date+time already locked in
+       for visit 1 — because the availability check only ever looks at
+       REAL committed bookings, and an in-progress multi-visit sequence
+       isn't written to the calendar/DB until ALL visits are scheduled,
+       so it was invisible to that check entirely. exclude_datetime_pairs
+       fixes this by filtering those out at the point of display, before
+       the user can even pick one.
+
+    2. Different midwife per visit: visit 3 of the same program landed
+       with a different midwife than visits 1-2, despite the service's
+       own description explicitly promising "the same midwife
+       throughout". The lower-level availability functions already
+       support a preferred_midwife_id that HARD-restricts (not just
+       soft-prefers) results to one midwife — it just was never being
+       passed through from here. Now it is, once a first visit has
+       established which midwife.
+    """
+    scheduled = lead.get("scheduled_visits") or []
+    if not scheduled:
+        return None, set()
+    preferred_midwife_id = scheduled[0].get("midwife_id") or None
+    exclude_pairs = {(v.get("date"), v.get("time")) for v in scheduled}
+    return preferred_midwife_id, exclude_pairs
+
+
+def _filter_day_excluding_visits(day, exclude_pairs: set):
+    """Remove slots matching already-scheduled (date, time) pairs from a
+    DayAvailability, returning a new filtered DayAvailability."""
+    if not exclude_pairs:
+        return day
+    from models import DayAvailability
+    kept = [s for s in day.slots if (day.date, s.start_time) not in exclude_pairs]
+    if len(kept) == len(day.slots):
+        return day
+    return DayAvailability(date=day.date, weekday=day.weekday, slots=kept)
+
+
 async def render_next_available_days(service_id: str, num_days: int = 7,
-                                     service_name: str = "") -> str:
+                                     service_name: str = "",
+                                     preferred_midwife_id: Optional[str] = None,
+                                     exclude_visits: Optional[set] = None) -> str:
     # Defensive check: is this service actually bookable at all?
     if not await is_service_bookable(service_id):
         return await render_unbookable_service_message(
             service_id, service_name or service_id
         )
-    days = await get_next_available_days(service_id, num_days=num_days)
+    days = await get_next_available_days(
+        service_id, num_days=num_days, preferred_midwife_id=preferred_midwife_id,
+    )
+    if exclude_visits:
+        days = [_filter_day_excluding_visits(d, exclude_visits) for d in days]
+        days = [d for d in days if d.slots]
     if not days:
+        if preferred_midwife_id:
+            return (
+                "Your assigned midwife doesn't have any more openings in "
+                f"the next {num_days} days. Please call us at "
+                "+971 50 729 7197 to discuss options — we can look at a "
+                "different midwife or a later date."
+            )
         return ("I couldn't find any open slots in the next "
                 f"{num_days} days. Please call us at +971 50 729 7197 to "
                 "discuss options.")
@@ -2536,9 +2661,19 @@ async def render_next_available_days(service_id: str, num_days: int = 7,
 
 
 async def render_slots_for_day(service_id: str, date_str: str,
-                               language: Optional[str] = None) -> str:
-    day = await get_availability(service_id, date_str)
+                               language: Optional[str] = None,
+                               preferred_midwife_id: Optional[str] = None,
+                               exclude_visits: Optional[set] = None) -> str:
+    day = await get_availability(service_id, date_str, preferred_midwife_id)
+    if exclude_visits:
+        day = _filter_day_excluding_visits(day, exclude_visits)
     if not day.slots:
+        if preferred_midwife_id:
+            return (
+                f"Your assigned midwife doesn't have any openings on "
+                f"{date_str}. Would you like to try another day, or "
+                f"call +971 50 729 7197 to discuss a different midwife?"
+            )
         return (f"No slots available on {date_str}. Would you like to try "
                 "another day?")
     # Language filter: if requested, keep only slots with midwives who
@@ -2953,6 +3088,13 @@ def booking_summary(session: dict) -> str:
     email = lead.get("email") if valid(lead.get("email")) else "Not provided"
     address = lead.get("patient_address") or "—"
 
+    # Midwife name deliberately not shown anywhere in this summary (or
+    # in the earlier time-slot list — see format_slots_human) per
+    # explicit request: no midwife name anywhere until after booking is
+    # actually complete. An earlier version of this code surfaced it in
+    # both places (added after a different, earlier explicit request);
+    # this reverts that display, without touching how a real midwife
+    # still gets assigned behind the scenes.
     visits = lead.get("scheduled_visits") or []
     if len(visits) > 1:
         visit_lines = []
@@ -2961,9 +3103,7 @@ def booking_summary(session: dict) -> str:
                 nice = datetime.strptime(v["date"], "%Y-%m-%d").strftime("%A, %B %d, %Y")
             except (ValueError, TypeError):
                 nice = v.get("date", "")
-            visit_lines.append(
-                f"  Visit {i}: {nice} at {v.get('time','')} with {v.get('midwife_name') or 'your midwife'}"
-            )
+            visit_lines.append(f"  Visit {i}: {nice} at {v.get('time','')}")
         schedule_block = "• Schedule (" + str(len(visits)) + " visits):\n" + "\n".join(visit_lines)
     else:
         on_date = lead.get("appointment_date", "")
@@ -2981,8 +3121,7 @@ def booking_summary(session: dict) -> str:
         "Please review your appointment details:\n\n"
         f"• Service: {lead.get('service_name', '')}\n"
         f"• Language: {lead.get('language', 'English')}\n"
-        + (f"• Midwife: {lead.get('midwife_name')}\n" if len(visits) <= 1 and lead.get("midwife_name") else "")
-        + f"{schedule_block}\n"
+        f"{schedule_block}\n"
         f"• Location: {lead.get('location_type', '').replace('_', ' ')}\n"
         f"• Address: {address}\n"
         f"• Name: {lead.get('patient_name', '')}\n"
@@ -3361,9 +3500,47 @@ async def get_ai_response(session_id: str, user_message: str,
     if proposed_svc_id and proposed_svc_name:
         cur_lead_svc = lead.get("service_id")
         cur_candidate = (session.get("candidate_service") or {}).get("service_id")
+
+        # Real, confirmed bug: while actively in VARIANT_PICKING for a
+        # family, the LLM often keeps re-extracting the SAME family (its
+        # parent id, e.g. "S004" for "Nanny & Caregiver Training") from
+        # every follow-up message that still mentions it — even a
+        # perfectly clear refinement like "private nanny training half
+        # day", which obviously names one specific tier. Since neither
+        # cur_lead_svc nor cur_candidate get set while only a FAMILY
+        # (not yet a specific tier) is active, the check below always
+        # treated this re-extraction as "a new pick", re-rendering the
+        # exact same options list every time and never once reaching
+        # the state-specific handler's own match_variant() call — which
+        # would have correctly resolved "half day" immediately. Skip
+        # re-triggering here when we're already picking a tier for
+        # exactly this same family; let it fall through to the
+        # VARIANT_PICKING state handler below, which knows how to match
+        # a specific tier out of a full sentence.
+        already_picking_this_family = False
+        if session.get("state") == STATE_VARIANT_PICKING:
+            active_family = session.get("variant_family") or ""
+            if active_family and (proposed_svc_id == cur_lead_svc
+                                   or proposed_svc_name == active_family):
+                already_picking_this_family = True
+            elif active_family:
+                # proposed_svc_id might be the family's own parent id, or
+                # any one of its children — either way, if it belongs to
+                # the SAME family already active, this isn't a new pick.
+                proposed_service_row = next(
+                    (s for s in await get_services() if s["service_id"] == proposed_svc_id),
+                    None,
+                )
+                if proposed_service_row:
+                    if (proposed_service_row.get("service_name") == active_family
+                            or proposed_service_row.get("family_name") == active_family):
+                        already_picking_this_family = True
+
         # Only treat it as new if it differs from BOTH the current lead and
-        # any existing candidate
-        if proposed_svc_id != cur_lead_svc and proposed_svc_id != cur_candidate:
+        # any existing candidate, AND we're not already mid-way through
+        # picking a tier for this exact same family.
+        if (proposed_svc_id != cur_lead_svc and proposed_svc_id != cur_candidate
+                and not already_picking_this_family):
             skip = {"and", "or", "the", "a", "an", "for", "of", "my",
                     "with", "to", "in", "on"}
             words = [w.lower() for w in re.findall(r"[A-Za-z]+", proposed_svc_name)
@@ -3390,6 +3567,29 @@ async def get_ai_response(session_id: str, user_message: str,
                 )
                 family_name = (matched_service or {}).get("family_name") or ""
                 variants = resolve_family_variants(all_services, family_name) if family_name else []
+
+                # NEW: proposed_svc_id might be a category PARENT itself
+                # (e.g. "S004" = "Nanny & Caregiver Training"), not one
+                # of its bookable children — this is a separate, real
+                # bug from the same root cause as the equivalent fix in
+                # enter_service_confirmation(): parent rows are
+                # deliberately never in bookable_services(), so
+                # matched_service above is None for one and family_name
+                # stays empty, even though the LLM correctly extracted
+                # exactly the right id for what the user asked for. This
+                # is a DUPLICATE of that same family-detection logic
+                # (inline here rather than calling the shared function),
+                # so it needed the identical fix applied separately.
+                if not variants:
+                    all_services_unfiltered = await get_services()
+                    parent_row = next(
+                        (s for s in all_services_unfiltered
+                         if s["service_id"] == proposed_svc_id and is_category_parent(s)),
+                        None,
+                    )
+                    if parent_row:
+                        family_name = parent_row.get("service_name", "")
+                        variants = resolve_family_variants(all_services, family_name)
 
                 if len(variants) > 1:
                     session["variant_family"] = family_name
@@ -3470,6 +3670,18 @@ async def get_ai_response(session_id: str, user_message: str,
         # user as a fake confirmation.
         if key == "appointment_date":
             value = correct_date_for_named_weekday(user_message, value)
+
+        # UAE phone validation — see is_uae_phone()'s docstring for the
+        # real bug this closes: this loop used to assign ANY LLM-
+        # extracted phone value with no validation whatsoever, silently
+        # bypassing the UAE-format check that existed elsewhere. Simply
+        # skip assignment on a bad number here (don't overwrite a
+        # previously-valid one, don't set an invalid one) — the
+        # STATE_COLLECTING_DETAILS handler will still be waiting on
+        # awaiting_field=="phone" and its own rejection message covers
+        # explaining why to the user.
+        if key == "phone" and not is_uae_phone(value):
+            continue
 
         # Only set if not already set, or if it's an answer-style update
         if not valid(lead.get(key)):
@@ -3892,6 +4104,7 @@ async def get_ai_response(session_id: str, user_message: str,
                     lead.pop("midwife_id", None)
                     lead.pop("midwife_name", None)
                     session["state"] = STATE_SLOT_PICKING
+                    _pref_mw, _excl = _multi_visit_constraints(lead)
                     if check["reason"] == "no_slot_at_time":
                         reply = (
                             f"That time isn't available anymore — looks like "
@@ -3899,7 +4112,8 @@ async def get_ai_response(session_id: str, user_message: str,
                             f"Sorry about that. Let me show you the current "
                             f"availability.\n\n"
                             + await render_next_available_days(
-                                svc_id, service_name=lead.get("service_name", "")
+                                svc_id, service_name=lead.get("service_name", ""),
+                                preferred_midwife_id=_pref_mw, exclude_visits=_excl,
                             )
                         )
                     else:
@@ -3907,7 +4121,8 @@ async def get_ai_response(session_id: str, user_message: str,
                             f"Something has changed in the schedule for this "
                             f"slot. Let me show you the latest availability.\n\n"
                             + await render_next_available_days(
-                                svc_id, service_name=lead.get("service_name", "")
+                                svc_id, service_name=lead.get("service_name", ""),
+                                preferred_midwife_id=_pref_mw, exclude_visits=_excl,
                             )
                         )
                     append_history(session, user_message, reply)
@@ -4185,9 +4400,11 @@ async def get_ai_response(session_id: str, user_message: str,
             )
             lead["appointment_date"] = new_date
             lead.pop("appointment_time", None)
+            _pref_mw, _excl = _multi_visit_constraints(lead)
             reply = await render_slots_for_day(
                 lead["service_id"], new_date,
                 language=lead.get("language"),
+                preferred_midwife_id=_pref_mw, exclude_visits=_excl,
             )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -4218,9 +4435,11 @@ async def get_ai_response(session_id: str, user_message: str,
             _debug_event("User wants different day — clearing date and re-rendering day list")
             lead.pop("appointment_date", None)
             lead.pop("appointment_time", None)
+            _pref_mw, _excl = _multi_visit_constraints(lead)
             reply = await render_next_available_days(
                 lead["service_id"],
                 service_name=lead.get("service_name", ""),
+                preferred_midwife_id=_pref_mw, exclude_visits=_excl,
             )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -4260,9 +4479,11 @@ async def get_ai_response(session_id: str, user_message: str,
 
         # If the user gave a date but no time, show slots for that date
         if lead.get("appointment_date") and not lead.get("appointment_time"):
+            _pref_mw, _excl = _multi_visit_constraints(lead)
             reply = await render_slots_for_day(
                 lead["service_id"], lead["appointment_date"],
                 language=lead.get("language"),
+                preferred_midwife_id=_pref_mw, exclude_visits=_excl,
             )
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
@@ -4305,11 +4526,18 @@ async def get_ai_response(session_id: str, user_message: str,
                 # More visits still needed — record this one, clear the
                 # date/time so the next round of slot-picking starts
                 # fresh, and loop back showing the next available days.
-                # midwife_name is deliberately LEFT SET as a preference —
-                # pick_slot_for_lead() already prefers it via
-                # find_slot(preferred_midwife_name=...), so the program
-                # tries to keep the same midwife across every visit
-                # without forcing it if she's unavailable on a later date.
+                #
+                # preferred_midwife_id is now HARD-passed through
+                # _multi_visit_constraints() below, restricting the next
+                # visit's day/time list to only the same midwife (and
+                # excluding whatever's already locked in for earlier
+                # visits) — a real, confirmed bug this replaces: the old
+                # comment here said this was "left as a preference" for
+                # pick_slot_for_lead() to softly honor, but that never
+                # actually stopped a DIFFERENT midwife's slot from being
+                # shown and picked in the first place, and separately
+                # never stopped the exact same slot already used for an
+                # earlier visit from being shown and picked again too.
                 scheduled.append(this_visit)
                 visit_num = len(scheduled)
                 try:
@@ -4318,8 +4546,10 @@ async def get_ai_response(session_id: str, user_message: str,
                     nice_date = this_visit["date"]
                 lead.pop("appointment_date", None)
                 lead.pop("appointment_time", None)
+                _pref_mw, _excl = _multi_visit_constraints(lead)
                 day_list = await render_next_available_days(
                     lead["service_id"], service_name=lead.get("service_name", ""),
+                    preferred_midwife_id=_pref_mw, exclude_visits=_excl,
                 )
                 reply = (
                     f"Visit {visit_num} of {visits_required} confirmed — "
@@ -4387,7 +4617,11 @@ async def get_ai_response(session_id: str, user_message: str,
             return response_payload(reply, session)
 
         # No date yet — show day list
-        reply = await render_next_available_days(lead["service_id"], service_name=lead.get("service_name", ""))
+        _pref_mw, _excl = _multi_visit_constraints(lead)
+        reply = await render_next_available_days(
+            lead["service_id"], service_name=lead.get("service_name", ""),
+            preferred_midwife_id=_pref_mw, exclude_visits=_excl,
+        )
         append_history(session, user_message, reply)
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
@@ -4412,17 +4646,32 @@ async def get_ai_response(session_id: str, user_message: str,
         # deny (because it maps to "no thanks / stop"), so we intercept
         # here based on context: if awaiting_field is "email", these words
         # mean "skip this field" not "cancel the whole booking."
+        #
+        # BUGFIX: this comment said "MUST run before the deny handler",
+        # but the code only ever SET lead["email"] here and fell through
+        # — it never actually stopped the deny check right below from
+        # ALSO firing on the exact same message, since `intent` itself
+        # was untouched. The result was a genuinely serious, completely
+        # reproducible bug: typing "skip" for email correctly skipped the
+        # field, then immediately cancelled the entire booking anyway,
+        # on every single booking where a patient didn't want to share an
+        # email — a very common, expected thing to type. Now explicitly
+        # skips the deny check via `skipped_email_field`.
+        skipped_email_field = False
         if (session.get("awaiting_field") == "email"
                 and user_message.lower().strip() in ("skip", "no", "no email",
                                                      "no thanks", "no thank you",
                                                      "dont have one", "don't have one",
                                                      "n/a", "na")):
             lead["email"] = "skip"
+            skipped_email_field = True
             # Fall through to the rest of the handler which will advance
             # to the next detail field (or move to AWAITING_CONFIRM if all
-            # fields collected)
+            # fields collected) — but skip the deny check immediately
+            # below, since this exact message already had a correct,
+            # specific meaning handled right here.
 
-        if intent == "deny":
+        if intent == "deny" and not skipped_email_field:
             session["state"] = STATE_BROWSING
             session["lead"] = {}
             session["email_asked"] = False

@@ -210,6 +210,17 @@ async def get_services() -> list:
             "location_type": _normalize_location_type(_clean(r.get("location_type"), 30)),
             "visits_required": _clean(r.get("visits_required"), 10),
             "family_name": _clean(r.get("family_name")),
+            # A dedicated category-level description (real brand copy —
+            # the tagline + intro paragraph from NativaCare's official
+            # service brochures), distinct from any individual variant's
+            # own description. Used specifically for the group-level
+            # line when a family is collapsed to one entry — before
+            # this, that line borrowed the first-listed variant's own
+            # description as a stand-in, which worked but was never
+            # really THE category's own voice. Same value repeated on
+            # every row in the category (simplest to keep in this
+            # row-per-service sheet without a separate lookup tab).
+            "category_description": _clean(r.get("category_description"), 500),
             "variant_label": _clean(r.get("variant_label"), 40),
             # family_name groups tier variants of the same underlying
             # service (e.g. Nanny Training "Half Day" and "Full Day" both

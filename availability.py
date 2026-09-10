@@ -309,6 +309,8 @@ async def get_availability(
     # Service lookup
     svc = next((s for s in services if s.get("service_id") == service_id), None)
     if not svc:
+        print(f"[Availability] {service_id} not found in get_services() at all — "
+              f"returning empty immediately")
         return DayAvailability(date=date_str, weekday=weekday, slots=[])
 
     try:
@@ -337,6 +339,8 @@ async def get_availability(
         link.get("midwife_id") for link in links
         if link.get("service_id") == service_id and link.get("midwife_id")
     }
+    print(f"[Availability] {service_id} on {date_str} ({weekday}), "
+          f"duration={duration}min — qualifying midwives: {qualifying_ids}")
     if preferred_midwife_id:
         if preferred_midwife_id not in qualifying_ids:
             return DayAvailability(date=date_str, weekday=weekday, slots=[])
@@ -348,6 +352,7 @@ async def get_availability(
     for midwife_id in qualifying_ids:
         midwife = midwife_lookup.get(midwife_id)
         if not midwife:
+            print(f"[Availability]   {midwife_id}: not found in active midwife_lookup — skipped")
             continue
         midwife_name = midwife.get("midwife_name") or midwife_id
 
@@ -355,12 +360,16 @@ async def get_availability(
         intervals = _work_intervals_for_midwife_on_date(
             midwife_id, on_date, weekly, overrides
         )
+        print(f"[Availability]   {midwife_id} ({midwife_name}) raw work intervals on "
+              f"{weekday}: {intervals}")
         if not intervals:
             continue
 
         # 2. Subtract existing bookings (+ buffer)
         busy = _existing_busy_intervals(midwife_id, date_str, buffer_min)
         intervals = _subtract_many(intervals, busy)
+        print(f"[Availability]   {midwife_id} intervals after subtracting "
+              f"{len(busy)} busy block(s) (+{buffer_min}min buffer): {intervals}")
 
         # 3. Generate slots that fit the service duration
         for s, e in intervals:
@@ -412,21 +421,25 @@ def format_slots_human(day: DayAvailability, max_lines: int = 30) -> str:
 
     Example output:
         Tuesday, June 7
-        - 09:00 with Najat
-        - 09:30 with Najat
-        - 10:00 with Najat, Fiona
+        - 09:00
+        - 09:30
+        - 10:00
         ...
+
+    Deliberately shows bare times, not midwife names, per explicit
+    request — an earlier version of this function showed "09:00 with
+    Najat" (added after a different explicit request to surface who's
+    assigned), but that's been reverted back to bare times here. The
+    underlying midwife assignment itself is untouched by this — slots
+    still resolve to a real midwife internally exactly as before, this
+    only changes what's displayed in this specific listing.
     """
     if not day.slots:
         return f"No availability on {day.date}."
 
-    # Group slots that share the same start time across midwives
-    by_start: dict = {}
-    for slot in day.slots:
-        by_start.setdefault(slot.start_time, []).append(slot.midwife_name)
-
-    # Sort start times
-    times = sorted(by_start.keys())
+    # Still de-duplicate by start time (a time slot can have more than
+    # one qualifying midwife behind it) — we just don't show who.
+    times = sorted({slot.start_time for slot in day.slots})
     on_date = _parse_date(day.date)
     # Cross-platform: "%-d" is Linux/Mac only and crashes on Windows.
     # Use "%d" (zero-padded) and strip the leading zero by hand.
@@ -436,16 +449,7 @@ def format_slots_human(day: DayAvailability, max_lines: int = 30) -> str:
 
     lines = [header]
     for t in times[:max_lines]:
-        # BUGFIX: the midwife names were already being grouped into
-        # by_start above (that's the whole reason it exists), but the
-        # actual line only ever showed the bare time — the docstring's
-        # own example ("09:00 with Najat") was never what this code
-        # actually produced. This is the direct cause of a real, reported
-        # problem: patients booking without ever being told which midwife
-        # they'd get.
-        names = by_start[t]
-        who = ", ".join(names) if names else ""
-        lines.append(f"- {t} with {who}" if who else f"- {t}")
+        lines.append(f"- {t}")
     if len(times) > max_lines:
         lines.append(f"... and {len(times) - max_lines} more. Ask for more times if needed.")
     return "\n".join(lines)
