@@ -227,6 +227,22 @@ async def get_services() -> list:
             # keys are checked here for a graceful transition period.
             "active": _truthy(r.get("active", r.get("available", "TRUE"))),
             "demo_notice": _clean(r.get("demo_notice")),
+            # BUGFIX: these three sheet columns exist and are filled in
+            # (short_desc/long_desc have real content, keywords has real
+            # search terms like "low milk supply support", "tongue tie
+            # guidance") but were never actually read into this dict at
+            # all. short_desc/long_desc weren't causing a visible bug
+            # only because every existing caller does
+            # `s.get("short_desc") or s.get("description")`, and
+            # description happens to duplicate the same text — but
+            # keywords had no such fallback and was silently unused
+            # everywhere, meaning a descriptive query ("my baby won't
+            # latch") never got matched against any service via its
+            # keywords at all, regardless of how well the sheet's
+            # keywords column was filled in.
+            "short_desc": _clean(r.get("short_desc")),
+            "long_desc": _clean(r.get("long_desc"), 4000),
+            "keywords": _clean(r.get("keywords"), 500),
         }
         for r in rows
         if _clean(r.get("service_name"))

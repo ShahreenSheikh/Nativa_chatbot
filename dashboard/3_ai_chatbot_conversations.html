@@ -161,7 +161,6 @@ Disconnect
 </div>
 </div>
 <div class="flex items-center gap-2 flex-1 max-w-md mx-4">
-<input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
 <input id="adminKeyInput" type="password" placeholder="Admin key" class="w-28 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
 <button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all shrink-0">Connect</button>
 <button id="refreshBtn" class="bg-surface-container-low text-on-surface-variant px-4 py-2 rounded-full text-sm font-bold hover:bg-surface-container transition-all shrink-0">Refresh</button>
@@ -286,11 +285,7 @@ Disconnect
     let humanModeSessions = {}; // session_id -> {channel, contact}
 
     async function loadState(){
-        try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
-        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
-            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
-        }
-        document.getElementById('apiUrlInput').value = apiBaseUrl;
+                apiBaseUrl = 'https://nativachatbot-production.up.railway.app'; // hardcoded — dashboard always talks to production
         try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
         document.getElementById('adminKeyInput').value = adminKey;
     }
@@ -498,7 +493,7 @@ Disconnect
     document.getElementById('chatSendBtn').addEventListener('click', sendLiveMessage);
     document.getElementById('chatSendInput').addEventListener('keydown', e => { if(e.key === 'Enter') sendLiveMessage(); });
     document.getElementById('connectBtn').addEventListener('click', async () => {
-        apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+        apiBaseUrl = 'https://nativachatbot-production.up.railway.app';
         adminKey = document.getElementById('adminKeyInput').value.trim();
         await saveApiUrl();
         await saveAdminKey();
@@ -508,7 +503,6 @@ Disconnect
     document.getElementById('logoutBtn').addEventListener('click', () => {
         apiBaseUrl = ''; adminKey = '';
         try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
-        document.getElementById('apiUrlInput').value = '';
         document.getElementById('adminKeyInput').value = '';
         connected = false; sessions = {}; humanModeSessions = {}; selectedSession = null;
         setStatus('idle'); renderList();

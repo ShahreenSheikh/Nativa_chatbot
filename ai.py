@@ -423,13 +423,34 @@ async def _record_recommended_services(session: dict, reply_text: str):
 
     Also records mentioned packages under `last_mentioned_packages` so
     that 'book it' after a package discussion is recognized as a
-    package-booking attempt (and routed to phone-redirect)."""
+    package-booking attempt (and routed to phone-redirect).
+
+    Checks FAMILY names (e.g. "Antenatal Preparation") as well as
+    individual service names (e.g. "Antenatal Preparation & Education")
+    — a real bug, not a hypothetical: once general-browsing replies
+    started using the short family name instead of a specific variant's
+    full name (see the "hide prices/tiers on first mention" change),
+    this function never matched anything for a family-grouped service at
+    all, since it only ever checked individual real service_name strings
+    as substrings. "book it" right after the bot described a family by
+    name then had nothing to resume, and fell through to the generic
+    full-menu prompt instead — which is exactly what a patient going
+    "postnatal recovery" -> "antenatal" -> "book it" would have hit."""
     if not reply_text:
         return
     services = await get_services()
     text_lc = reply_text.lower()
     mentioned = []
+    matched_families = set()
     for s in services:
+        family = s.get("family_name") or ""
+        if family and family.lower() in text_lc and family not in matched_families:
+            matched_families.add(family)
+            mentioned.append({
+                "service_id": s["service_id"],  # a real member of the family —
+                "service_name": family,          # good enough to resolve the family later
+            })
+            continue
         name = s.get("service_name", "")
         if not name or len(name) < 4:
             continue
@@ -478,12 +499,47 @@ _PRONOUN_BOOK_PATTERNS = [
 ]
 
 
+def _edit_distance_leq(a: str, b: str, max_dist: int) -> bool:
+    """True if the Levenshtein edit distance between a and b is at most
+    max_dist. Simple DP, fine for the short phrases this is used on."""
+    if abs(len(a) - len(b)) > max_dist:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[-1] <= max_dist
+
+
 def references_recent_recommendations(user_msg: str) -> bool:
-    """Does the user's message look like 'book the things you just mentioned'?"""
+    """Does the user's message look like 'book the things you just mentioned'?
+
+    Includes fuzzy matching for the short trigger phrases ("book it",
+    "book that", etc.) — a real, confirmed gap: a typo like "boo it"
+    (missing the k) matched nothing at all here, and since nothing else
+    in the pipeline recognizes it as a booking trigger either, it fell
+    all the way through to the generic full-service-menu fallback
+    instead of resuming whatever the bot had just described. Only
+    applied to the genuinely short phrases (under 15 chars) — longer
+    ones aren't fuzzy-matched, since edit-distance tolerance on a long
+    sentence risks false positives on something that was never meant to
+    trigger booking at all."""
     if not user_msg:
         return False
     lc = user_msg.lower().strip()
-    return any(p in lc for p in _PRONOUN_BOOK_PATTERNS)
+    if any(p in lc for p in _PRONOUN_BOOK_PATTERNS):
+        return True
+    # Fuzzy fallback: only for a short message that's CLOSE to one of the
+    # short patterns, not a substring check (a typo means it won't be a
+    # substring at all, that's the whole problem being fixed here).
+    if len(lc) <= 20:
+        for p in _PRONOUN_BOOK_PATTERNS:
+            if len(p) <= 15 and _edit_distance_leq(lc, p, max_dist=1):
+                return True
+    return False
 
 
 # Shared package-reference detection. Used in CONFIRMING_SERVICE and
@@ -525,10 +581,25 @@ def looks_like_deny_with_alternative(user_msg: str) -> bool:
 async def references_package(user_msg: str) -> Optional[str]:
     """If the user mentioned a package by name (or used a vague package
     phrasing), return the package name (or 'package' as a generic). Else
-    return None."""
+    return None.
+
+    Guards against a real, confirmed bug: the "first 2 words" partial
+    match below (needed so "newborn starter" matches "Newborn Starter
+    Package" without the word "package") also fires when those same
+    first two words happen to BE a real service/family's exact name —
+    "Postnatal Recovery Bundle"'s first two words are "postnatal
+    recovery", identical to the real bookable service family. Someone
+    typing exactly "postnatal recovery" got redirected to a phone-call
+    package message instead of ever reaching their actual bookable
+    service. Now checks: if the message is an exact match for a real
+    service/family name AND doesn't contain any word from the package
+    name beyond those first two (no "bundle", "package", etc.), the
+    service wins — this is the same principle already applied to the
+    LLM-output disambiguation in _normalize_understand(), just needed
+    here too since this function runs independently of that one."""
     if not user_msg:
         return None
-    msg_lc = user_msg.lower()
+    msg_lc = user_msg.lower().strip()
 
     # Match against actual package names from the catalog
     try:
@@ -544,9 +615,25 @@ async def references_package(user_msg: str) -> Optional[str]:
         # partial "starter package" matches via the signal list below).
         if name in msg_lc:
             return p.get("package_name")
-        # Try matching distinctive substring (first 2 words)
+        # Try matching distinctive substring (first 2 words) — but first
+        # check this isn't actually an exact real service/family name.
         first_words = " ".join(name.split()[:2])
         if first_words and first_words in msg_lc:
+            if msg_lc == first_words:
+                try:
+                    services = await get_services()
+                except Exception:
+                    services = []
+                real_names = {(s.get("service_name") or "").lower() for s in services}
+                real_families = {(s.get("family_name") or "").lower() for s in services if s.get("family_name")}
+                if msg_lc in real_names or msg_lc in real_families:
+                    _debug_event(
+                        f"references_package: {msg_lc!r} matches package "
+                        f"{p.get('package_name')!r}'s first-2-words heuristic, "
+                        f"but is ALSO an exact real service/family name — "
+                        f"service wins, not treated as a package reference."
+                    )
+                    continue
             return p.get("package_name")
 
     # Fall back to vague package signals
@@ -602,6 +689,14 @@ async def _service_explicit_in_message(message: str) -> bool:
     We match service names against the message text. A name only counts
     if it's at least two words OR is distinctive enough not to match
     common English (e.g. 'Hypnobirthing' is distinctive; 'Care' is not).
+
+    Also checks FAMILY names (e.g. "Postnatal Recovery", not just the
+    full individual service name "Postnatal Recovery Support") — for
+    consistency with the same check added to references_package() after
+    a real bug there. Without this, a family name that happened to
+    overlap with a category phrase could theoretically fall through to
+    the category-word path instead of being recognized as a specific,
+    explicit service reference.
     """
     if not message:
         return False
@@ -610,16 +705,21 @@ async def _service_explicit_in_message(message: str) -> bool:
         services = await get_services()
     except Exception:
         return False
+    families_seen = set()
     for s in services:
         name = (s.get("service_name") or "").lower().strip()
-        if not name:
-            continue
-        # Multi-word names: full substring match
-        if len(name.split()) >= 2 and name in msg_lc:
-            return True
-        # Distinctive single words (rare in English): match on word boundary
-        if name in ("hypnobirthing", "vbac", "preconception"):
-            if name in msg_lc:
+        if name:
+            # Multi-word names: full substring match
+            if len(name.split()) >= 2 and name in msg_lc:
+                return True
+            # Distinctive single words (rare in English): match on word boundary
+            if name in ("hypnobirthing", "vbac", "preconception"):
+                if name in msg_lc:
+                    return True
+        family = (s.get("family_name") or "").strip()
+        if family and family.lower() not in families_seen:
+            families_seen.add(family.lower())
+            if len(family.split()) >= 2 and family.lower() in msg_lc:
                 return True
     return False
 
@@ -629,6 +729,30 @@ async def _services_in_category(category: str) -> list:
     bookable = await bookable_services()
     return [s for s in bookable
             if (s.get("category") or "").strip().lower() == category.lower()]
+
+
+async def _render_category_listing(category_word: str, in_category: list) -> str:
+    """Shared formatter for the two category-word listing call sites.
+
+    Groups tier variants into one line per family (e.g. "Nanny Training",
+    not separate "Nanny Training (Half Day)" / "(Full Day)" lines) and
+    includes a short description — this listing had the exact same two
+    gaps already fixed everywhere else in the general browsing list: no
+    family grouping, and bare names with no description at all."""
+    grouped = await group_services_by_family(in_category)
+    lines = [f"Our {category_word.title()} services:\n"]
+    for s in grouped:
+        suffix = " (multiple options)" if s.get("_variant_count", 1) > 1 else ""
+        lines.append(f"• {s['service_name']}{suffix}")
+        desc = (s.get("short_desc") or s.get("description") or "").strip()
+        if desc:
+            first_sentence = desc.split(". ")[0].rstrip(".") + "."
+            if len(first_sentence) > 130:
+                first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+            lines.append(f"  {first_sentence}")
+        lines.append("")
+    lines.append("Which would you like to book?")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +942,12 @@ SESSION STATE:
 {session_state}
 
 CATALOG (services):
+Each service may list [keywords] — real symptoms/needs patients describe
+in their own words. If the user describes a need or symptom without
+naming a service directly (e.g. "my baby won't latch", "I have low milk
+supply", "need help with birth prep"), match it against these keywords
+to identify the right service_id/service_name, the same as if they'd
+named it directly.
 {service_catalog}
 
 ROSTER (midwives):
@@ -840,8 +970,18 @@ async def _build_understand_prompt(session: Optional[dict] = None) -> str:
     services, midwives, packages, clinic = await _gather(
         bookable_services, get_midwives, get_packages, get_clinic_info
     )
-    svc_list = "\n".join(f"- {s['service_name']} (id: {s['service_id']})"
-                         for s in group_services_by_family(services)[:30])
+    # Include keywords so a descriptive query ("my baby won't latch",
+    # "I have low milk supply") can be matched to the right service even
+    # when the user never names it — a real, confirmed gap: keywords
+    # existed in the sheet with real content but were never read into the
+    # catalog fed to this prompt at all, so the LLM had no way to use
+    # them regardless of how well-filled-in they were.
+    def _svc_line(s):
+        kw = (s.get("keywords") or "").strip()
+        kw_part = f" [keywords: {kw}]" if kw else ""
+        return f"- {s['service_name']} (id: {s['service_id']}){kw_part}"
+    grouped_for_prompt = await group_services_by_family(services)
+    svc_list = "\n".join(_svc_line(s) for s in grouped_for_prompt[:30])
     mw_list = "\n".join(f"- {m['midwife_name']} (id: {m['midwife_id']})"
                         for m in midwives[:20])
     pkg_list = "\n".join(f"- {p['package_name']} (id: {p['package_id']})"
@@ -1060,6 +1200,55 @@ async def _normalize_understand(d: dict, user_message: str) -> dict:
         cleaned["package_id"] = match["package_id"]
         cleaned["package_name"] = match["package_name"]
 
+    # Disambiguation guard — real bug report: a user typed exactly
+    # "postnatal recovery" (matching the bookable service family shown to
+    # them a message earlier) and the LLM extracted package_name
+    # "Postnatal Recovery Bundle" instead — a real package that exists in
+    # the catalog, but the word "bundle" never appeared anywhere in what
+    # the user actually typed. The LLM had both a same-named service
+    # family and a similarly-named package in its context and picked the
+    # wrong one; _normalize_understand only validated that the proposed
+    # package NAME exists somewhere in the catalog, never whether it was
+    # actually the better match for the raw text.
+    #
+    # Fix: if the user's raw message is an exact (or near-exact) match for
+    # a bookable service or service FAMILY name, and the LLM also
+    # proposed a package that ISN'T that same literal text, prefer the
+    # service — a verbatim match to real bookable-service text is a much
+    # stronger signal than an LLM's package guess, especially when the
+    # package name contains extra words (like "Bundle") the user never
+    # typed at all.
+    if cleaned.get("package_id"):
+        msg_norm = re.sub(r"[^a-z0-9 ]", "", (user_message or "").lower()).strip()
+        # Prefer an actually-bookable family member for the fallback —
+        # a family can have sheet rows for a variant nobody's staffed to
+        # deliver yet, and picking one of those as the "representative"
+        # here would just walk the user into a dead end a few turns
+        # later instead of into real, bookable options.
+        bookable = await bookable_services()
+        bookable_ids = {s["service_id"] for s in bookable}
+        family_names = {
+            (s.get("family_name") or "").lower(): s
+            for s in services
+            if s.get("family_name") and s["service_id"] in bookable_ids
+        }
+        exact_service_match = svc_by_name.get(msg_norm)
+        if exact_service_match and exact_service_match["service_id"] not in bookable_ids:
+            exact_service_match = None  # same reasoning — don't fall back to an unbookable single service either
+        exact_family_match = family_names.get(msg_norm)
+        if (exact_service_match or exact_family_match) and msg_norm != cleaned["package_name"].lower():
+            _debug_event(
+                f"Disambiguation: LLM proposed package "
+                f"{cleaned['package_name']!r} but raw text {user_message!r} "
+                f"exactly matches a bookable service/family instead — "
+                f"preferring the service, dropping the package guess."
+            )
+            cleaned.pop("package_id", None)
+            cleaned.pop("package_name", None)
+            representative = exact_service_match or exact_family_match
+            cleaned["service_id"] = representative["service_id"]
+            cleaned["service_name"] = representative["service_name"]
+
     # date
     date_v = slots.get("appointment_date")
     if isinstance(date_v, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_v):
@@ -1216,19 +1405,28 @@ async def _build_compose_context(intent: str, slots: dict,
     need_midwives = intent in ("midwife_list", "midwife_question", "general")
     need_packages = intent in ("package_question", "price_question", "general", "service_list")
     need_faqs = intent in ("faq", "general")
+    # Only show actual prices when the user specifically asked about
+    # price — for a general "what services do you offer" browse, prices
+    # (and any hint of tiers/variants existing) are deliberately withheld
+    # entirely so there's nothing for the model to leak. This was a real
+    # bug: even with an instruction saying "don't mention the other tiers'
+    # prices", the model still had a representative price sitting in its
+    # context and used it anyway. Not giving it the data at all is a much
+    # more reliable fix than asking it not to use data it can see.
+    show_prices_in_list = intent == "price_question"
 
     # Always include the bookable-service list, even on intents that don't
     # need details — this way the LLM knows what we CAN'T offer if asked.
     bookable = await bookable_services()
     bookable_names = {s["service_name"] for s in bookable}
     parts.append("\nBookable services (only these can be booked):")
-    if need_services:
+    if need_services and show_prices_in_list:
         # Group tier variants (e.g. Nanny Training "Half Day"/"Full Day")
         # under one line so the initial list doesn't overwhelm the user
         # with every combination up front — the specific tiers get shown
         # once they actually pick that family (see the variant-picking
         # step in the main state machine below).
-        for s in group_services_by_family(bookable):
+        for s in await group_services_by_family(bookable):
             if s.get("_variant_count", 1) > 1:
                 parts.append(
                     f"- {s['service_name']} ({s.get('category', '')}): "
@@ -1245,10 +1443,26 @@ async def _build_compose_context(intent: str, slots: dict,
                     f"{s.get('duration_minutes', '?')} min, "
                     f"location: {s.get('location_type', '')}"
                 )
+    elif need_services:
+        # General browsing (service_list / general / faq intents, NOT a
+        # specific price question) — name and a one-line description only.
+        # No price, no duration, no mention that tiers/variants exist at
+        # all. Full details (and, for a grouped family, the specific
+        # tier choices) only appear once the user actually picks a
+        # service — see render_service_confirmation / render_variant_choice.
+        for s in await group_services_by_family(bookable):
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                parts.append(f"- {s['service_name']}: {first_sentence}")
+            else:
+                parts.append(f"- {s['service_name']}")
     else:
         # Compact list, just names — so the LLM can recognize what's offered
         # without bloating the prompt.
-        for s in group_services_by_family(bookable):
+        for s in await group_services_by_family(bookable):
             parts.append(f"- {s['service_name']}")
 
     # Tell the LLM about advertised-but-unbookable services explicitly, so
@@ -1301,6 +1515,13 @@ async def _build_compose_context(intent: str, slots: dict,
 async def compose_reply(session: dict, user_message: str,
                         understanding: dict) -> str:
     """LLM call 2 — friendly reply using targeted DB slice."""
+    # Deterministic fast-path for "what services do you offer" specifically
+    # — see render_service_browse_list()'s docstring for why this bypasses
+    # the LLM entirely for this one intent rather than continuing to rely
+    # on prompt instructions the model didn't reliably follow.
+    if understanding.get("intent") == "service_list":
+        return await render_service_browse_list()
+
     if not client:
         return ("I can help with services, prices, midwives, packages, "
                 "or bookings. What would you like to know?")
@@ -1400,9 +1621,23 @@ def is_transient_error(err: Exception) -> bool:
     provider's shared queue is briefly full, not that we've hit a quota.
 
     Returns True only for errors that might genuinely succeed on a retry.
-    Returns False for hard errors (auth, daily quotas) where retrying
-    just wastes time."""
+    Returns False for hard errors (auth, daily quotas, per-minute rate
+    limits) where retrying just wastes an already-scarce request budget."""
     err_str = str(err).lower()
+    # Per-minute (and other short-window) rate limits are explicitly NOT
+    # retried here, even though the underlying condition does eventually
+    # clear — a 1-2s backoff does nothing useful against a real per-
+    # minute cap, and immediately retrying just spends more of the same
+    # limited budget on the SAME request, which is exactly the "burning
+    # through credits in one chat" pattern this was built to stop. See
+    # call_llm_with_retry — rate-limit errors get ONE longer wait instead
+    # of the normal quick-retry loop.
+    if "rate limit" in err_str or "rate_limit" in err_str:
+        return False
+    if "requests per minute" in err_str or " rpm" in err_str:
+        return False
+    if "429" in err_str and "queue" not in err_str:
+        return False
     # Cerebras-specific transient: shared queue is full right now
     if "queue_exceeded" in err_str or "queue exceeded" in err_str:
         return True
@@ -1429,6 +1664,22 @@ def is_transient_error(err: Exception) -> bool:
     return False
 
 
+def is_rate_limit_error(err: Exception) -> bool:
+    """Specifically a per-minute/per-second rate limit, as distinct from
+    the other transient errors above — these get exactly ONE longer wait
+    (not the normal quick 1s/2s retry loop) since a short retry against a
+    real rate limit just spends more of the same limited budget for
+    nothing."""
+    err_str = str(err).lower()
+    if "rate limit" in err_str or "rate_limit" in err_str:
+        return True
+    if "requests per minute" in err_str or " rpm" in err_str:
+        return True
+    if "429" in err_str and "queue" not in err_str:
+        return True
+    return False
+
+
 def call_llm_with_retry(*, model: str, messages: list,
                         temperature: float, max_tokens: int,
                         response_format: dict = None,
@@ -1438,7 +1689,17 @@ def call_llm_with_retry(*, model: str, messages: list,
 
     Retries are quick (1s, then 2s) to keep total latency under ~4s in
     the worst case. Hard errors (auth, quota exhausted, malformed
-    request) are re-raised immediately — no point retrying them."""
+    request) are re-raised immediately — no point retrying them.
+
+    Rate-limit errors specifically (is_rate_limit_error) get exactly ONE
+    longer wait (10s) instead of the normal quick-retry loop, then give
+    up rather than continuing to hammer an already-saturated per-minute
+    budget — this is the fix for a real reported problem: with the old
+    1s/2s backoff, a rate-limited conversation would retry immediately,
+    consuming more of the SAME per-minute allowance on every single
+    logical call (up to 3x per call, understand() AND compose_reply()
+    each doing this), which made the rate limit worse rather than
+    riding it out."""
     import time as _t
     backoffs = [1.0, 2.0]  # seconds between attempts after first failure
     last_err = None
@@ -1455,6 +1716,20 @@ def call_llm_with_retry(*, model: str, messages: list,
             return client.chat.completions.create(**kwargs)
         except Exception as e:
             last_err = e
+            if is_rate_limit_error(e):
+                if attempt >= 0:  # only ever try once more, regardless of max_attempts
+                    _debug_event(f"LLM rate limit hit: {str(e)[:120]} — waiting 10s for one retry, then giving up if it recurs.")
+                    _t.sleep(10.0)
+                    try:
+                        kwargs = {
+                            "model": model, "messages": messages,
+                            "temperature": temperature, "max_tokens": max_tokens,
+                        }
+                        if response_format is not None:
+                            kwargs["response_format"] = response_format
+                        return client.chat.completions.create(**kwargs)
+                    except Exception as e2:
+                        raise e2
             if attempt >= max_attempts - 1:
                 # Exhausted retries — surface the error to caller
                 raise
@@ -1505,25 +1780,54 @@ def llm_error_reply(session: dict, err: Exception) -> str:
 async def render_variant_choice(family_name: str, variants: list) -> str:
     """Shown when a picked service turns out to have multiple tiers (half
     day/full day, single visit/3-visit program, etc.) — lists the actual
-    options with their real prices/durations so the user can pick one
-    before moving into the normal single-service confirmation flow."""
-    lines = [f"{family_name} has a few options:"]
+    options with their real prices/durations AND a short description so
+    the user can actually tell what they're choosing between, not just
+    see a bare price/duration line, before moving into the normal
+    single-service confirmation flow.
+
+    Uses the full service_name (e.g. "Nanny Training (Half Day)") as the
+    display label rather than the bare variant_label ("Half Day") — the
+    bare label reads as ambiguous on its own once it's separated from the
+    "Nanny Training has a few options:" header above it. variant_label
+    is still what the matching logic in the state handler keys off of;
+    this only changes what's SHOWN."""
+    lines = [f"{family_name} has a few options:\n"]
     for v in variants:
-        label = v.get("variant_label") or v.get("service_name", "")
+        label = v.get("service_name") or v.get("variant_label", "")
         price = v.get("default_price_aed", "?")
         duration = v.get("duration_minutes", "")
         visits = v.get("visits_required", "")
         extra = f", {visits} visits" if visits and str(visits) not in ("", "1") else ""
         duration_str = f", {duration} min" if duration else ""
-        lines.append(f"  • {label} — AED {price}{duration_str}{extra}")
-    lines.append("\nWhich would you like?")
+        lines.append(f"• {label} — AED {price}{duration_str}{extra}")
+
+        desc = (v.get("short_desc") or v.get("description") or "").strip()
+        if desc:
+            # Keep it to roughly one sentence — this is a quick comparison
+            # view, not the full service description (that's already
+            # shown later, in render_service_confirmation, once a
+            # specific variant is picked).
+            first_sentence = desc.split(". ")[0].rstrip(".") + "."
+            if len(first_sentence) > 140:
+                first_sentence = first_sentence[:137].rsplit(" ", 1)[0] + "..."
+            lines.append(f"  {first_sentence}")
+        lines.append("")  # blank line between options for readability
+
+    lines.append("Which would you like?")
     return "\n".join(lines)
 
 
 async def bookable_services() -> list:
     """Return only services that have at least one active midwife mapped to
     them in `midwife_services`. Prevents the bot from advertising services
-    nobody can actually book."""
+    nobody can actually book.
+
+    Also explicitly excludes category-parent rows (see is_category_parent)
+    even if one accidentally got a midwife_services link — a parent row
+    has no price and isn't a real appointment, so it should never be
+    directly bookable regardless of what's in that link table. This is a
+    defense-in-depth check, not the primary mechanism (the primary one is
+    simply never linking a parent row's ID in midwife_services at all)."""
     services, links, midwives = await _gather(
         get_services, get_midwife_services, get_midwives,
     )
@@ -1532,10 +1836,11 @@ async def bookable_services() -> list:
         link["service_id"] for link in links
         if link.get("midwife_id") in active_midwife_ids
     }
-    return [s for s in services if s["service_id"] in bookable_service_ids]
+    return [s for s in services
+            if s["service_id"] in bookable_service_ids and not is_category_parent(s)]
 
 
-def group_services_by_family(services: list) -> list:
+async def group_services_by_family(services: list) -> list:
     """Collapse tier variants of the same underlying service (e.g. Nanny
     Training "Half Day" AED 2900 / "Full Day" AED 4600, both sharing
     family_name="Nanny Training") into ONE representative entry — used
@@ -1544,12 +1849,21 @@ def group_services_by_family(services: list) -> list:
     things to choose from. Standalone services (blank family_name) pass
     through unchanged, one entry each.
 
-    The representative entry uses the LOWEST price among the family's
-    variants (a natural "starting from" price) and gets an extra
-    "_variant_count" key so callers can tell it's a group. The original
-    per-variant rows are never mutated — resolving a family back to its
-    specific variants happens separately, when the user actually picks
-    that family (see the variant-picking step in the main state machine).
+    Now ASYNC (previously sync) — this version prefers a real, dedicated
+    parent/category row when one exists in the sheet (a row with a blank
+    default_price_aed, whose service_name matches the family name — see
+    is_category_parent()), using ITS name and description directly
+    rather than borrowing them from one of the bookable children. This
+    needed an extra fetch (get_services(), the FULL unfiltered catalog —
+    parent rows are never in the bookable-filtered list passed in here,
+    since they have no midwife link and no price to book against), hence
+    the signature change; every call site was updated to `await` this.
+
+    Falls back to the previous behavior (representative built from the
+    cheapest bookable variant, first-listed variant's own description)
+    when no matching parent row exists in the sheet — so this stays
+    backward-compatible with a services tab that doesn't use the parent-
+    row pattern at all.
     """
     families: dict = {}
     standalone: list = []
@@ -1565,12 +1879,64 @@ def group_services_by_family(services: list) -> list:
             order.append(family)
         families[family].append(s)
 
+    # Look up real parent rows once, for all families at once — cheaper
+    # than a separate get_services() call per family.
+    parent_by_name: dict = {}
+    if order:
+        try:
+            all_services = await get_services()
+            for s in all_services:
+                if is_category_parent(s):
+                    parent_by_name[s.get("service_name", "")] = s
+        except Exception as e:
+            print(f"[Grouping] parent lookup failed entirely: {e}")
+
+    # Diagnostic logging — temporary, to pin down a real reported bug
+    # where the category-level description wasn't showing the parent
+    # row's own description even with a confirmed-correct sheet and a
+    # confirmed-restarted backend. Uses print() specifically (not
+    # _debug_event, which only writes to an internal buffer the server
+    # console never shows) so this is actually visible in the real
+    # terminal output. Prints exactly what family names were found
+    # needing grouping vs what parent names were actually matched, so a
+    # real mismatch (encoding, whitespace, anything) shows up directly
+    # instead of needing more guessing.
+    print(f"[Grouping] families needing grouping = {order}")
+    print(f"[Grouping] parent rows found = {list(parent_by_name.keys())}")
+    for family in order:
+        if family not in parent_by_name:
+            print(
+                f"[Grouping] NO PARENT MATCH for family {family!r} "
+                f"(repr to catch invisible whitespace/encoding differences) "
+                f"— falling back to a child's own description."
+            )
+
     grouped = []
     for family in order:
         variants = families[family]
-        if len(variants) == 1:
+        if len(variants) == 1 and family not in parent_by_name:
             grouped.append(variants[0])
             continue
+
+        parent = parent_by_name.get(family)
+        if parent:
+            representative = dict(parent)
+            representative["_variant_count"] = len(variants)
+            representative["_variant_service_ids"] = [v["service_id"] for v in variants]
+            # A parent row's OWN short_desc/description are typically
+            # blank (all the real copy lives in category_description
+            # instead) — without this, the browsing list showed a bare
+            # name with no text under it at all. category_description
+            # wins if both are somehow set, since that's the field
+            # specifically meant for this representative-level view.
+            cat_desc = parent.get("category_description") or ""
+            if cat_desc:
+                representative["short_desc"] = cat_desc
+                representative["description"] = cat_desc
+            grouped.append(representative)
+            continue
+
+        # No dedicated parent row — fall back to the previous approach.
         cheapest = min(
             variants,
             key=lambda v: float(v.get("default_price_aed") or "inf")
@@ -1581,9 +1947,28 @@ def group_services_by_family(services: list) -> list:
         representative["service_name"] = family
         representative["_variant_count"] = len(variants)
         representative["_variant_service_ids"] = [v["service_id"] for v in variants]
+        primary = variants[0]
+        cat_desc = primary.get("category_description") or ""
+        if cat_desc:
+            representative["short_desc"] = cat_desc
+            representative["description"] = cat_desc
+        else:
+            representative["short_desc"] = primary.get("short_desc") or primary.get("description") or representative.get("short_desc")
+            representative["description"] = primary.get("description") or representative.get("description")
         grouped.append(representative)
 
     return standalone + grouped
+
+
+def is_category_parent(service: dict) -> bool:
+    """A category-only row: has a service_name and description but NO
+    price — meaning it's not a real bookable appointment, just the
+    header for a group of real bookable children (which share its name
+    via their own family_name field). Never appears in bookable_services()
+    output since it (deliberately) has no midwife_services link either."""
+    price = str(service.get("default_price_aed") or "").strip()
+    return bool(service.get("service_name")) and not price
+
 
 
 def resolve_family_variants(services: list, family_name: str) -> list:
@@ -1591,6 +1976,150 @@ def resolve_family_variants(services: list, family_name: str) -> list:
     every service row that belongs to it (for showing the actual tier
     choices once a family has been picked)."""
     return [s for s in services if (s.get("family_name") or "") == family_name]
+
+
+_ORDINAL_WORDS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+}
+# Deliberately NOT including bare cardinal words ("one", "two", "three"...)
+# — "one" in particular is a common English filler/pronoun ("the third
+# ONE", "which ONE", "that ONE") far more often than it's actually used
+# as a number. Including it caused "the third one" to match position 1
+# (from "one") before ever reaching "third", since dict iteration found
+# "one" first. A bare digit ("1", "2", "3"...) is still handled
+# separately below and covers the same real use case without the
+# ambiguity.
+
+
+def match_variant(user_message: str, variants: list) -> Optional[dict]:
+    """Resolve a user's free-text reply to one specific variant, given the
+    options shown by render_variant_choice(). Rewritten after a real bug
+    report: a message like "4 sessions" failed to match a label like
+    "Signature Course (4 sessions)" two different ways at once —
+    (1) the old exact-match check only tested whether the FULL LABEL was
+    contained in the message, never the reverse (a short reply is often a
+    fragment OF the longer label, not the other way around), and
+    (2) the old word-fallback used bare substring checks, so the word
+    "session" (from "Single Session") false-matched inside "sessions"
+    (from the message) — a plural containing a singular as a substring is
+    not the same word. This version fixes both, adds digits as matchable
+    tokens (so "4" itself can disambiguate), and adds explicit
+    ordinal/positional matching ("the third one", "option 2", a bare "3")
+    as a final fallback rather than depending on the LLM to have already
+    resolved that upstream.
+    """
+    if not variants:
+        return None
+    msg_lower = (user_message or "").lower().strip()
+    if not msg_lower:
+        return None
+
+    labels = [(v, (v.get("variant_label") or v.get("service_name") or "").lower()) for v in variants]
+
+    # 1. Bidirectional exact-label substring match — catches both "the
+    #    full label was typed" and "a fragment of the label was typed".
+    for v, label in labels:
+        if label and (label in msg_lower or msg_lower in label):
+            return v
+
+    # 2. Word-boundary distinctive-word match. \b...\b prevents "session"
+    #    (from "Single Session") from false-matching inside "sessions"
+    #    (from the message) — regex now includes digits too, so a bare
+    #    "4" can be the deciding token when that's genuinely what's
+    #    distinctive between two options. Single-digit tokens ("4", "5")
+    #    are explicitly allowed through the length filter even though
+    #    it's normally >1 — for a family like "3-Visit Program" vs
+    #    "5-Visit Program", the NUMBER is usually the actual distinguishing
+    #    signal (not "visit" vs "visits", which is the same word in both
+    #    labels and shouldn't be relied on to disambiguate at all).
+    word_counts: dict = {}
+    for _, label in labels:
+        for w in set(re.findall(r"[a-z0-9]+", label)):
+            if len(w) > 1 or w.isdigit():
+                word_counts[w] = word_counts.get(w, 0) + 1
+    distinctive_words = {w for w, count in word_counts.items() if count == 1}
+    for v, label in labels:
+        label_words = {w for w in re.findall(r"[a-z0-9]+", label) if len(w) > 1 or w.isdigit()}
+        for w in label_words:
+            if w in distinctive_words and re.search(r"\b" + re.escape(w) + r"\b", msg_lower):
+                return v
+
+    # 3. Ordinal / positional fallback — "the third one", "option 2",
+    #    "number 1", or a bare digit like "3". Position is 1-indexed in
+    #    what the user typed, matching the order variants were listed in
+    #    render_variant_choice (same order as `variants` here).
+    stripped = msg_lower.strip(" .!")
+    if stripped.isdigit():
+        idx = int(stripped) - 1
+        if 0 <= idx < len(variants):
+            return variants[idx]
+
+    for word, idx in _ORDINAL_WORDS.items():
+        if re.search(r"\b" + re.escape(word) + r"\b", msg_lower) and idx < len(variants):
+            return variants[idx]
+
+    option_match = re.search(r"\b(?:option|number|choice)\s*#?\s*(\d+)\b", msg_lower)
+    if option_match:
+        idx = int(option_match.group(1)) - 1
+        if 0 <= idx < len(variants):
+            return variants[idx]
+
+    return None
+
+
+async def render_service_browse_list() -> str:
+    """Deterministic 'what services do you offer' reply — name + a short
+    description per service, grouped families collapsed to one line
+    (e.g. "Nanny Training", not "Nanny Training (Half Day)"), no prices
+    or tier counts shown at this stage.
+
+    This exists because compose_reply()'s LLM-composed version of this
+    same answer kept drifting back to showing a specific variant's full
+    name despite the prompt explicitly saying not to — a real, repeated
+    bug, not a hypothetical: the underlying data and prompt were both
+    already correct, the LLM free-text generation just didn't reliably
+    follow the instruction every time. Rather than continue tuning the
+    prompt, this makes the one specific, well-defined case ("service_list"
+    intent — literally "what do you offer") fully deterministic Python
+    instead, the same way render_service_menu() already is for the
+    booking-trigger menu. Broader intents ("general", "faq",
+    "price_question") still go through the LLM, since those legitimately
+    need its flexibility to handle open-ended follow-ups."""
+    services = await bookable_services()
+    if not services:
+        return ("I'm having trouble loading the service list. Please call us "
+                "at +971 50 729 7197.")
+    lines = ["We offer the following services:\n"]
+    display_services = await group_services_by_family(services)
+    by_cat: dict = {}
+    for s in display_services:
+        by_cat.setdefault(s.get("category", "Other"), []).append(s)
+    show_headers = len(by_cat) > 1
+    for cat in by_cat:
+        if show_headers:
+            lines.append(f"{cat}:")
+        for s in by_cat[cat]:
+            lines.append(f"- **{s['service_name']}**")
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                lines.append(f"  {first_sentence}")
+        lines.append("")
+
+    packages = await get_packages()
+    if packages:
+        names = ", ".join(p["package_name"] for p in packages[:5])
+        lines.append(
+            f"We also have bundled packages ({names}) that combine several "
+            f"services. Feel free to ask about any of them!"
+        )
+    return "\n".join(lines).strip()
 
 
 async def render_service_menu() -> str:
@@ -1601,16 +2130,34 @@ async def render_service_menu() -> str:
     lines = ["Which service would you like to book?"]
     # Group by category for readability, and collapse tier variants
     # (half day/full day, single-visit/3-visit/5-visit, etc.) into one
-    # line per family so this menu doesn't list near-duplicates.
-    display_services = group_services_by_family(services)
+    # line per family so this menu doesn't list near-duplicates. Each
+    # line also gets a short description now — price/duration/tier
+    # choices only appear once a specific service is actually picked
+    # (render_service_confirmation for a standalone service, or
+    # render_variant_choice for a family), matching the same
+    # "name + description first, details after" pattern used in the
+    # general-browsing compose reply and the variant picker.
+    display_services = await group_services_by_family(services)
     by_cat: dict = {}
     for s in display_services:
         by_cat.setdefault(s.get("category", "Other"), []).append(s)
+    # Only show category headers when there's genuinely more than one —
+    # with no "category" column filled in on the sheet, everything falls
+    # under the generic "Other" default, and a single "Other:" header
+    # just adds noise without grouping anything meaningfully.
+    show_headers = len(by_cat) > 1
     for cat in by_cat:
-        lines.append(f"\n{cat}:")
+        if show_headers:
+            lines.append(f"\n{cat}:")
         for s in by_cat[cat][:8]:
             suffix = " (multiple options)" if s.get("_variant_count", 1) > 1 else ""
             lines.append(f"  • {s['service_name']}{suffix}")
+            desc = (s.get("short_desc") or s.get("description") or "").strip()
+            if desc:
+                first_sentence = desc.split(". ")[0].rstrip(".") + "."
+                if len(first_sentence) > 130:
+                    first_sentence = first_sentence[:127].rsplit(" ", 1)[0] + "..."
+                lines.append(f"    {first_sentence}")
     return "\n".join(lines)
 
 
@@ -1773,10 +2320,34 @@ async def enter_service_confirmation(session: dict, service_id: str,
                                       service_name: str) -> str:
     """Move the session into CONFIRMING_SERVICE state with the given
     candidate. The service is NOT yet committed to lead — that happens
-    only after the user says yes."""
+    only after the user says yes.
+
+    Family-aware: if service_id belongs to a family with multiple
+    bookable tiers, routes into VARIANT_PICKING instead of jumping
+    straight to a single-service confirmation. This matters because this
+    function has several callers beyond the main staging block (e.g. the
+    "book it" resumption path after a general/FAQ answer, and "book
+    <name>" direct extraction) — without this check here too, those
+    paths would silently confirm whichever ONE family member happened to
+    be on hand instead of asking which tier the user actually wants."""
     # Defensive: don't enter confirmation for an unbookable service.
     if not await is_service_bookable(service_id):
         return await render_unbookable_service_message(service_id, service_name)
+
+    bookable = await bookable_services()
+    matched = next((s for s in bookable if s["service_id"] == service_id), None)
+    family_name = (matched or {}).get("family_name") or ""
+    if family_name:
+        variants = resolve_family_variants(bookable, family_name)
+        if len(variants) > 1:
+            session["variant_family"] = family_name
+            session["state"] = STATE_VARIANT_PICKING
+            _debug_event(
+                f"enter_service_confirmation: {service_name} belongs to "
+                f"family '{family_name}' with {len(variants)} variants — "
+                f"routing to VARIANT_PICKING instead of a direct confirm."
+            )
+            return await render_variant_choice(family_name, variants)
 
     session["candidate_service"] = {
         "service_id": service_id,
@@ -2410,7 +2981,8 @@ def booking_summary(session: dict) -> str:
         "Please review your appointment details:\n\n"
         f"• Service: {lead.get('service_name', '')}\n"
         f"• Language: {lead.get('language', 'English')}\n"
-        f"{schedule_block}\n"
+        + (f"• Midwife: {lead.get('midwife_name')}\n" if len(visits) <= 1 and lead.get("midwife_name") else "")
+        + f"{schedule_block}\n"
         f"• Location: {lead.get('location_type', '').replace('_', ' ')}\n"
         f"• Address: {address}\n"
         f"• Name: {lead.get('patient_name', '')}\n"
@@ -2723,6 +3295,35 @@ async def get_ai_response(session_id: str, user_message: str,
     _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
     _DEBUG_BUFFER["corrections"] = list(understanding.get("corrections", []))
 
+    # Universal "cancel / start over" — a real gap found in testing: only
+    # 2 of the 8 booking-flow states (variant_picking, and one later
+    # state) had their own explicit "cancel" check, so saying "cancel" or
+    # "start over" partway through — e.g. mid slot-picking, mid
+    # collecting-details, right before final confirmation — did nothing
+    # recognizable and just left the user stuck in whatever state-
+    # specific fallback that stage happened to have. This runs BEFORE
+    # any state-specific dispatch so it works identically no matter where
+    # in the flow the user currently is, rather than depending on each
+    # state remembering to handle it individually. Only fires when
+    # there's actually something to cancel (not fresh STATE_BROWSING with
+    # nothing in progress, where "cancel" isn't a meaningful action).
+    msg_stripped_for_cancel = (user_message or "").strip().lower().rstrip(".!")
+    _CANCEL_PHRASES = {"cancel", "nevermind", "never mind", "start over",
+                        "start again", "restart", "go back to start",
+                        "forget it", "cancel booking", "cancel that"}
+    if (session.get("state") != STATE_BROWSING
+            and msg_stripped_for_cancel in _CANCEL_PHRASES):
+        _debug_event(f"Universal cancel: resetting from {session.get('state')} to BROWSING")
+        session["state"] = STATE_BROWSING
+        session.pop("candidate_service", None)
+        session.pop("variant_family", None)
+        session.pop("awaiting_field", None)
+        session["lead"] = {}
+        reply = "No problem — I've cancelled that. What would you like to do instead?"
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
     if intent == "emergency":
         # Apply the same non-emergency guard the keyword detector uses.
         # LLM tends to escalate broadly in healthcare contexts — that's
@@ -2775,7 +3376,14 @@ async def get_ai_response(session_id: str, user_message: str,
                 # program, etc.) — if so, the user needs to pick a specific
                 # tier first, rather than us silently booking whichever
                 # variant happened to be the LLM's representative pick.
-                all_services = await get_services()
+                #
+                # Uses bookable_services() (already filtered to services
+                # with an active midwife assigned), NOT the raw
+                # get_services() — otherwise a family with, say, 2 sheet
+                # rows but only 1 actually staffed would still show BOTH
+                # as pickable options, letting someone select a tier
+                # nobody can actually deliver.
+                all_services = await bookable_services()
                 matched_service = next(
                     (s for s in all_services if s["service_id"] == proposed_svc_id),
                     None,
@@ -2877,7 +3485,12 @@ async def get_ai_response(session_id: str, user_message: str,
     # =====================================================================
     if state == STATE_VARIANT_PICKING:
         family_name = session.get("variant_family", "")
-        all_services = await get_services()
+        # Same fix as the staging block above — must use bookable_services()
+        # here too, since this is the code that actually resolves the
+        # user's typed choice against the option list. Using the
+        # unfiltered list would let someone select a tier with no midwife
+        # assigned to it.
+        all_services = await bookable_services()
         variants = resolve_family_variants(all_services, family_name)
 
         if intent == "deny" or msg_lower.strip() in ("cancel", "nevermind", "never mind"):
@@ -2888,47 +3501,53 @@ async def get_ai_response(session_id: str, user_message: str,
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
 
-        # Match the user's reply against each variant's label/name. Two
-        # passes: first look for an EXACT label match as a substring
-        # ("full day" in "full day please, yes"), which is unambiguous.
-        # Only fall back to individual-word matching if no full label
-        # matched, and even then, exclude words shared by 2+ variants in
-        # this family ("day" appears in both "Half Day" and "Full Day" —
-        # matching on it alone can't tell them apart, and matching
-        # whichever variant happens to be checked first, as an earlier
-        # version of this code did, silently picks the wrong one).
-        matched = None
-        labels = [(v, (v.get("variant_label") or v.get("service_name") or "").lower()) for v in variants]
-
-        for v, label in labels:
-            if label and label in msg_lower:
-                matched = v
-                break
+        # Resolve the user's reply to a specific variant — see
+        # match_variant()'s docstring for the real bugs this replaced
+        # (a directional substring-match miss, and "session" false-
+        # matching inside "sessions"). This one function now also
+        # understands ordinals ("the third one") and "option N" phrasing
+        # directly, instead of only a bare digit.
+        matched = match_variant(user_message, variants)
 
         if not matched:
-            word_counts: dict = {}
-            for _, label in labels:
-                for w in set(re.findall(r"[a-z]+", label)):
-                    if len(w) > 2:
-                        word_counts[w] = word_counts.get(w, 0) + 1
-            distinctive_words = {w for w, count in word_counts.items() if count == 1}
-            for v, label in labels:
-                label_words = {w for w in re.findall(r"[a-z]+", label) if len(w) > 2}
-                if any(w in distinctive_words and w in msg_lower for w in label_words):
-                    matched = v
-                    break
+            # Cross-family switch: user is trying to switch to a
+            # DIFFERENT family entirely while picking a tier for this
+            # one (e.g. picking an Antenatal tier, replies "nanny
+            # training" — or even "none of these i want to get nanny
+            # training"). Real, confirmed bug: neither case was being
+            # caught here at all — the STAGING block one layer up
+            # apparently doesn't reliably catch this either in practice,
+            # so this needs its own direct, deterministic check rather
+            # than assuming that layer handles it. Checks two ways: the
+            # other family's full name appearing anywhere in the message
+            # (catches "none of these i want to get nanny training"), or
+            # — for a bare short reply with nothing else in it — an
+            # unambiguous prefix match, same heuristic used for the
+            # equivalent fix in CONFIRMING_SERVICE.
+            all_bookable = await bookable_services()
+            all_families = {s.get("family_name") for s in all_bookable if s.get("family_name")}
+            other_families = [f for f in all_families if f and f != family_name]
+            switch_target = next(
+                (f for f in other_families if f.lower() in msg_lower), None,
+            )
+            if not switch_target:
+                msg_stripped = re.sub(r"[^a-z ]", "", msg_lower).strip()
+                if len(msg_stripped) >= 4 and " " not in msg_stripped:
+                    prefix_hits = [f for f in other_families if f.lower().startswith(msg_stripped)]
+                    if len(prefix_hits) == 1:
+                        switch_target = prefix_hits[0]
+            if switch_target:
+                _debug_event(
+                    f"Cross-family switch in VARIANT_PICKING: "
+                    f"{family_name!r} -> {switch_target!r} via {user_message!r}"
+                )
+                target_variants = resolve_family_variants(all_bookable, switch_target)
+                session["variant_family"] = switch_target
+                reply = await render_variant_choice(switch_target, target_variants)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
 
-        if not matched and len(variants) > 0:
-            # Fall back: a bare number ("1", "2") picks by position, since
-            # some users will just reply with the option number even
-            # though we didn't explicitly number them.
-            stripped = msg_lower.strip()
-            if stripped.isdigit():
-                idx = int(stripped) - 1
-                if 0 <= idx < len(variants):
-                    matched = variants[idx]
-
-        if not matched:
             reply = await render_variant_choice(family_name, variants)
             reply = "Sorry, I didn't catch which one — " + reply[0].lower() + reply[1:]
             append_history(session, user_message, reply)
@@ -2952,10 +3571,85 @@ async def get_ai_response(session_id: str, user_message: str,
     # State: CONFIRMING_SERVICE — bot asked "is this the right service?"
     # =====================================================================
     if state == STATE_CONFIRMING_SERVICE:
+        # ----- Variant switch: user is trying to switch tiers, not just
+        # confirm/deny (e.g. confirming "Half Day" but replying "actually
+        # full day") -----
+        # This was a real gap: neither "full day" alone nor "3 visits"
+        # alone is real catalog text the understand() LLM call would ever
+        # extract as a service_name (only the FAMILY name, e.g. "Nanny
+        # Training", appears in its catalog) — so a bare tier-switch
+        # attempt fell through every check below with nothing recognizing
+        # it, and the user got the exact same "please confirm X" message
+        # right back, stuck confirming the option they were trying to
+        # change. Checked before the deny/confirm logic since a
+        # correction like this isn't really a "no" either.
+        #
+        # IMPORTANT: this now runs BEFORE the package-reference check
+        # below (previously came after it) — a real, confirmed bug: "the
+        # other one" is one of the literal _VAGUE_PACKAGE_SIGNALS phrases
+        # (added for a genuinely different scenario — vaguely referencing
+        # a package instead of a service), so with the package check
+        # running first, it intercepted "the other one" every time,
+        # before this code ever got a chance to recognize it as a same-
+        # family variant switch. Confirmed via direct testing: a typo'd
+        # version ("the othen onw", which doesn't match the vague-
+        # package-signal string) worked correctly, while the correctly-
+        # spelled "the other one" silently failed specifically because
+        # of this ordering.
+        cand = session.get("candidate_service") or {}
+        cand_family = ""
+        if cand.get("service_id"):
+            bookable_for_switch = await bookable_services()
+            cand_service = next(
+                (s for s in bookable_for_switch if s["service_id"] == cand["service_id"]), None,
+            )
+            cand_family = (cand_service or {}).get("family_name") or ""
+        if cand_family:
+            family_variants = resolve_family_variants(bookable_for_switch, cand_family)
+            if len(family_variants) > 1:
+                # "the other one" / "the other option" (and typo'd forms
+                # like "the othen onw") — a real, confirmed gap: with
+                # exactly 2 variants, "other" unambiguously means
+                # whichever one isn't currently being confirmed, but
+                # match_variant() has no concept of a "current" selection
+                # to be relative to, so it never recognized this at all.
+                # Checked here specifically, before match_variant(),
+                # since this needs cand (the current candidate) which
+                # match_variant() doesn't have access to.
+                switch_match = None
+                if len(family_variants) == 2:
+                    msg_words = re.findall(r"[a-z]+", msg_lower)
+                    has_other = any(
+                        _edit_distance_leq(w, "other", max_dist=1) for w in msg_words
+                    )
+                    if has_other:
+                        switch_match = next(
+                            (v for v in family_variants if v["service_id"] != cand["service_id"]),
+                            None,
+                        )
+                if not switch_match:
+                    switch_match = match_variant(user_message, family_variants)
+                if switch_match and switch_match["service_id"] != cand["service_id"]:
+                    _debug_event(
+                        f"Variant switch in CONFIRMING_SERVICE: "
+                        f"{cand.get('service_name')} -> {switch_match['service_name']}"
+                    )
+                    session["candidate_service"] = {
+                        "service_id": switch_match["service_id"],
+                        "service_name": switch_match["service_name"],
+                    }
+                    reply = await render_service_confirmation(
+                        switch_match["service_id"], switch_match["service_name"]
+                    )
+                    append_history(session, user_message, reply)
+                    save_chat_log(session_id, user_message, reply)
+                    return response_payload(reply, session)
+
         # ----- Package reference: redirect to phone -----
         # The user named a package (or used a package phrasing) instead
         # of confirming the current candidate. Packages aren't bookable
-        # through chat, so we redirect honestly.
+        # through chat, so we redirect honestly. Only reached now if the
+        # variant-switch check above didn't find a same-family match.
         pkg_name = await references_package(user_message)
         if pkg_name:
             _debug_event(f"Package reference in CONFIRMING_SERVICE: {pkg_name}")
@@ -2972,7 +3666,41 @@ async def get_ai_response(session_id: str, user_message: str,
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
 
-        # ----- Deny + alternative: cancel candidate, ask what they want -----
+        # ----- Cross-family switch via a bare partial name: user is
+        # confirming one service but types a short reference to a
+        # DIFFERENT family entirely (e.g. confirming Antenatal, replies
+        # just "postnatal" — not the full "postnatal recovery" the
+        # catalog uses, so the LLM's understand() call has nothing to
+        # extract a service_name from, and it fell through to nothing at
+        # all: no acknowledgment, the exact same confirmation message
+        # just repeated back verbatim). Only fires on a real, distinctive
+        # word (4+ letters) that's an unambiguous prefix match for
+        # exactly ONE family — short/generic fragments intentionally
+        # don't trigger this, to avoid guessing wrong on a genuinely
+        # unclear reply.
+        msg_stripped = re.sub(r"[^a-z ]", "", (user_message or "").lower()).strip()
+        if len(msg_stripped) >= 4 and " " not in msg_stripped:
+            all_bookable = await bookable_services()
+            all_families = {s.get("family_name") for s in all_bookable if s.get("family_name")}
+            prefix_hits = [
+                f for f in all_families
+                if f.lower().startswith(msg_stripped) and f != cand_family
+            ]
+            if len(prefix_hits) == 1:
+                target_family = prefix_hits[0]
+                target_variants = resolve_family_variants(all_bookable, target_family)
+                _debug_event(
+                    f"Cross-family switch in CONFIRMING_SERVICE via bare "
+                    f"prefix {user_message!r} -> family {target_family!r}"
+                )
+                session["variant_family"] = target_family
+                session["state"] = STATE_VARIANT_PICKING
+                reply = await render_variant_choice(target_family, target_variants)
+                append_history(session, user_message, reply)
+                save_chat_log(session_id, user_message, reply)
+                return response_payload(reply, session)
+
+
         # "No, [something else]" should NOT silently re-show the current
         # confirmation. If we have a clear new candidate from the LLM,
         # the re-confirm branch below handles it. Otherwise, acknowledge
@@ -3954,11 +4682,7 @@ async def get_ai_response(session_id: str, user_message: str,
             in_category = await _services_in_category(category_word)
             if in_category:
                 _debug_event(f"Category '{category_word}' in SERVICE_SELECTING — listing {len(in_category)} services")
-                lines = [f"Our {category_word.title()} services:"]
-                for s in in_category:
-                    lines.append(f"  • {s['service_name']}")
-                lines.append("\nWhich would you like to book?")
-                reply = "\n".join(lines)
+                reply = await _render_category_listing(category_word, in_category)
                 append_history(session, user_message, reply)
                 save_chat_log(session_id, user_message, reply)
                 return response_payload(reply, session)
@@ -4076,11 +4800,7 @@ async def get_ai_response(session_id: str, user_message: str,
                     lead.pop("service_id", None)
                     lead.pop("service_name", None)
                 session["state"] = STATE_SERVICE_SELECTING
-                lines = [f"Our {category_word.title()} services:"]
-                for s in in_category:
-                    lines.append(f"  • {s['service_name']}")
-                lines.append("\nWhich would you like to book?")
-                reply = "\n".join(lines)
+                reply = await _render_category_listing(category_word, in_category)
                 append_history(session, user_message, reply)
                 save_chat_log(session_id, user_message, reply)
                 return response_payload(reply, session)

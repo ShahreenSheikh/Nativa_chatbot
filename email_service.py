@@ -154,6 +154,64 @@ async def send_patient_confirmation(lead: dict, pdf_bytes: bytes = None, pdf_fil
     return await _send_email(email, f"Your {CLINIC_NAME} appointment", html, attachments=attachments)
 
 
+async def send_payment_rejection(invoice: dict, reason: str = "") -> dict:
+    """Email the patient when their payment screenshot couldn't be
+    verified. A real, confirmed gap this fills: reject_invoice() in
+    payments.py only ever sent a WhatsApp message, gated behind
+    `invoice.get("channel") == "whatsapp"` — a website-channel patient
+    (booked using email, no WhatsApp contact captured the same way) got
+    NO notification at all on rejection, unlike approval which already
+    emails everyone. They'd only find out by manually revisiting their
+    payment page, which nothing prompts them to do."""
+    lead = invoice.get("lead") or {}
+    email = lead.get("email") or ""
+    if not email or "@" not in email:
+        return {"status": "skipped_no_email"}
+
+    patient_name = lead.get("patient_name") or "there"
+    service = lead.get("service_name") or "your appointment"
+    reference = invoice.get("reference", "")
+    reason_line = f"<p><b>Reason:</b> {reason}</p>" if reason else ""
+    upload_url = _proof_upload_url_for_email(invoice)
+    upload_line = (
+        f'<p><a href="{upload_url}">Click here to upload a new screenshot</a></p>'
+        if upload_url else
+        "<p>Please reply to this email with a clearer screenshot, or contact us directly.</p>"
+    )
+
+    html = f"""
+    <div style="font-family: -apple-system, sans-serif; max-width: 600px;">
+      <h2>We couldn't verify your payment</h2>
+      <p>Dear {patient_name},</p>
+      <p>We received your payment screenshot for <b>{service}</b>
+      (reference {reference}), but weren't able to verify it.</p>
+      {reason_line}
+      {upload_line}
+      <p>Your slot isn't held until we've verified payment, so please
+      resubmit as soon as you can.</p>
+      <p>If you have any questions, call {CLINIC_PHONE} or reply to this email.</p>
+      <hr/>
+      <p style="font-size: 12px; color: #888;">
+        For medical emergencies, call Abu Dhabi emergency services on 998 or
+        visit the nearest hospital. This is not an emergency service.
+      </p>
+    </div>
+    """
+    return await _send_email(email, f"Action needed: your {CLINIC_NAME} payment", html)
+
+
+def _proof_upload_url_for_email(invoice: dict) -> str:
+    """Best-effort link back to the /pay/{reference} upload page — mirrors
+    payments.py's _proof_upload_url() without importing payments here
+    (avoids a circular import between the two modules)."""
+    import os
+    base = os.getenv("FRONTEND_BASE_URL", "").rstrip("/")
+    reference = invoice.get("reference", "")
+    if not base or not reference:
+        return ""
+    return f"{base}/pay/{reference}"
+
+
 async def send_clinic_notification(lead: dict) -> dict:
     """Send the clinic team a new-lead notification."""
     if not CLINIC_EMAIL:

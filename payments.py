@@ -340,6 +340,8 @@ async def approve_invoice(invoice_id: int, approved_by: str = "") -> dict:
 
 
 async def reject_invoice(invoice_id: int, reason: str = "", rejected_by: str = "") -> dict:
+    from email_service import send_payment_rejection
+
     invoice = db.get_invoice(invoice_id)
     if not invoice:
         return {"status": "not_found"}
@@ -351,6 +353,13 @@ async def reject_invoice(invoice_id: int, reason: str = "", rejected_by: str = "
            + f". Please reply with a clearer screenshot, or contact us directly — "
              f"your reference number is {invoice['reference']}.")
 
+    # Email — this was a real, confirmed gap: only WhatsApp-channel
+    # patients got notified of a rejection at all (see
+    # send_payment_rejection's docstring). Sent regardless of channel,
+    # same as the approval path already does, since a patient's email
+    # may be on file even if they originally messaged via WhatsApp.
+    email_status = await send_payment_rejection(invoice, reason)
+
     if invoice.get("channel") == "whatsapp" and invoice.get("contact"):
         try:
             from whatsapp_service import send_whatsapp_message
@@ -358,4 +367,4 @@ async def reject_invoice(invoice_id: int, reason: str = "", rejected_by: str = "
         except Exception as e:
             print(f"[Payments] WhatsApp rejection notice failed: {e}")
 
-    return {"status": "rejected", "message": msg}
+    return {"status": "rejected", "message": msg, "email_status": email_status}

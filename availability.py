@@ -436,7 +436,16 @@ def format_slots_human(day: DayAvailability, max_lines: int = 30) -> str:
 
     lines = [header]
     for t in times[:max_lines]:
-        lines.append(f"- {t}")
+        # BUGFIX: the midwife names were already being grouped into
+        # by_start above (that's the whole reason it exists), but the
+        # actual line only ever showed the bare time — the docstring's
+        # own example ("09:00 with Najat") was never what this code
+        # actually produced. This is the direct cause of a real, reported
+        # problem: patients booking without ever being told which midwife
+        # they'd get.
+        names = by_start[t]
+        who = ", ".join(names) if names else ""
+        lines.append(f"- {t} with {who}" if who else f"- {t}")
     if len(times) > max_lines:
         lines.append(f"... and {len(times) - max_lines} more. Ask for more times if needed.")
     return "\n".join(lines)

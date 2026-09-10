@@ -162,7 +162,6 @@ Disconnect
 <span class="font-label-md font-bold">Backend</span>
 <span class="w-2 h-2 rounded-full bg-outline-variant" id="payStatusDot"></span>
 </div>
-<input id="apiUrlInput" type="text" placeholder="https://nativachatbot-production.up.railway.app" class="flex-1 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
 <input id="adminKeyInput" type="password" placeholder="Admin key (if set)" class="w-40 px-4 py-2 bg-surface-container-low border-none rounded-full text-sm focus:ring-2 focus:ring-primary/20 transition-all">
 <div class="flex gap-2 shrink-0">
 <button id="connectBtn" class="bg-primary text-white px-4 py-2 rounded-full text-sm font-bold hover:opacity-90 transition-all">Connect</button>
@@ -195,11 +194,7 @@ Disconnect
     let activeFilter = '';
 
     async function loadState(){
-        try{ apiBaseUrl = localStorage.getItem('nativacareApiBaseUrl') || ''; }catch(e){ apiBaseUrl = ''; }
-        if(!apiBaseUrl && /^https?:$/.test(window.location.protocol)){
-            apiBaseUrl = window.location.origin; // auto-connect when dashboard is served by the same backend
-        }
-        document.getElementById('apiUrlInput').value = apiBaseUrl;
+                apiBaseUrl = 'https://nativachatbot-production.up.railway.app'; // hardcoded — dashboard always talks to production
         try{ adminKey = localStorage.getItem('nativacareAdminKey') || ''; }catch(e){ adminKey = ''; }
         document.getElementById('adminKeyInput').value = adminKey;
     }
@@ -376,7 +371,7 @@ Disconnect
     });
 
     document.getElementById('connectBtn').addEventListener('click', async () => {
-        apiBaseUrl = document.getElementById('apiUrlInput').value.trim();
+        apiBaseUrl = 'https://nativachatbot-production.up.railway.app';
         adminKey = document.getElementById('adminKeyInput').value.trim();
         await saveApiUrl();
         await saveAdminKey();
@@ -386,7 +381,6 @@ Disconnect
     document.getElementById('logoutBtn').addEventListener('click', () => {
         apiBaseUrl = ''; adminKey = '';
         try{ localStorage.removeItem('nativacareApiBaseUrl'); localStorage.removeItem('nativacareAdminKey'); }catch(e){}
-        document.getElementById('apiUrlInput').value = '';
         document.getElementById('adminKeyInput').value = '';
         invoices = [];
         setStatusDot('idle'); renderInvoices();
