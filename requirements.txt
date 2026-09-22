@@ -10,6 +10,8 @@ google-api-python-client==2.149.0
 google-auth==2.35.0
 google-auth-httplib2==0.2.0
 sqlalchemy==2.0.35
-psycopg2-binary==2.9.9
+# 2.9.9 falls back to compiling against newer Python on Railway and fails.
+# 2.9.10 provides compatible binary wheels for current CPython releases.
+psycopg2-binary==2.9.10
 python-multipart==0.0.12
 fpdf2==2.8.1
