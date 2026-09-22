@@ -4,8 +4,14 @@ import ai as _ai
 from service_intents import detect_service_key,is_context_followup,needs_empathy
 try: import persistent_store as _ps
 except Exception: _ps=None
-CONTACT_NUMBER="971 50 7297197"
+CONTACT_NUMBER="+971 50 7297197"
 SERVICE_LABELS={"nanny_training":"Nanny Training / Newborn Care Training","breastfeeding_support":"Breastfeeding Support","postnatal_support":"Postnatal Recovery Support","antenatal_preparation":"Antenatal Preparation & Education"}
+SERVICE_HELP={
+"nanny_training":"We have something that can help you with this. Our newborn care and nanny training covers practical areas such as newborn sleep, soothing, feeding support, safe handling and everyday newborn care.",
+"breastfeeding_support":"We have something that can help you with this. Our breastfeeding and lactation support can help with latching, positioning, feeding cues and other common feeding difficulties.",
+"postnatal_support":"We have something that can help you through this. Our postnatal recovery support provides personalised guidance for physical recovery, feeding, wellbeing and the challenges that can come after birth.",
+"antenatal_preparation":"We have something that can help you feel more prepared and supported. Our antenatal preparation provides practical guidance for pregnancy, labour, birth, breastfeeding and the early days with your baby."
+}
 GREETING_ALIASES={"hi","hey","hiya","hello","salam","assalamualaikum","assalamu alaikum","good morning","good afternoon","good evening"}
 
 def _restore(sid):
@@ -29,10 +35,16 @@ def _format(t,source):
     if source!="whatsapp":
         t=t.replace("**","");t=re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)",r"\1",t)
     return t
-def _empathy(message,reply):
+def _empathy(message,reply,service_key=None):
     if not needs_empathy(message):return reply
-    if any(x in (reply or "").lower()[:180] for x in ("i'm sorry","i’m sorry","that sounds","understandably","sorry you're","sorry you’re")):return reply
-    return "I'm sorry you're dealing with this. That can feel difficult and overwhelming. "+(reply or "")
+    existing=(reply or "").lower()[:300]
+    prefix=""
+    if not any(x in existing for x in ("i'm sorry","i’m sorry","that sounds","understandably","sorry you're","sorry you’re")):
+        prefix="I'm sorry you're dealing with this. That can feel difficult and overwhelming. "
+    help_line=SERVICE_HELP.get(service_key,"")
+    if help_line and not any(x in existing for x in ("we have something that can help","can help you with this","can help you through this","can help you feel more prepared")):
+        prefix+=help_line+" "
+    return prefix+(reply or "")
 def _is_price_question(m):return any(x in (m or "").lower() for x in ("price","cost","how much","fee","charges","aed"))
 async def _price_fallback(service_key):
     if not service_key:return ""
@@ -47,13 +59,12 @@ async def _price_fallback(service_key):
         if x not in unique:unique.append(x)
     if len(unique)==1:return f"The current price for {unique[0][0]} is AED {unique[0][1]}."
     if unique:return "Current options are: "+"; ".join(f"{n} — AED {p}" for n,p in unique[:6])+"."
-    return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at 971 50 7297197 for the current price."
+    return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at +971 50 7297197 for the current price."
 
 async def get_ai_response(session_id: str,user_message: str,source: str="website"):
     _restore(session_id);session=_ai._sessions.get(session_id);service_key=detect_service_key(user_message)
     if session and service_key:session["last_discussed_service_key"]=service_key
     previous=(session or {}).get("last_discussed_service_key")
-    # Make greeting aliases deterministic so hi/hey behave like hello.
     normalized=(user_message or "").strip().lower().rstrip("!.,")
     message_for_ai="hello" if normalized in GREETING_ALIASES else user_message
     if session and not service_key and is_context_followup(user_message) and previous:
@@ -64,7 +75,5 @@ async def get_ai_response(session_id: str,user_message: str,source: str="website
         if detected:session["last_discussed_service_key"]=detected
     reply=result.get("reply","")
     active_key=service_key or (session or {}).get("last_discussed_service_key") or previous
-    # Never emit a bare 'AED' price answer. Use the live catalog or clearly say it is unconfirmed.
-    if _is_price_question(user_message) and not re.search(r"\bAED\s*\d",reply or "",re.I):
-        reply=await _price_fallback(active_key)
-    reply=_empathy(user_message,reply);result["reply"]=_format(reply,source);_persist(session_id);return result
+    if _is_price_question(user_message) and not re.search(r"\bAED\s*\d",reply or "",re.I):reply=await _price_fallback(active_key)
+    reply=_empathy(user_message,reply,active_key);result["reply"]=_format(reply,source);_persist(session_id);return result
