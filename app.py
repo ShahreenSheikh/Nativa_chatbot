@@ -1,4 +1,5 @@
 """Production entrypoint and NativaCare policy overrides."""
+from pathlib import Path
 import main as _main
 import ai as _ai
 import database as _catalog
@@ -12,7 +13,7 @@ _main.get_ai_response=_safe_get_ai_response
 # supplied to the LLM, and normalize legacy clinic location rows to home.
 _original_info=_ai._db_get_clinic_info
 async def _safe_info(*a,**k):
-    info=dict(await _original_info(*a,**k));info.pop("address",None);info.pop("clinic_address",None);info["phone"]="971 50 7297197";return info
+    info=dict(await _original_info(*a,**k));info.pop("address",None);info.pop("clinic_address",None);info["phone"]="+971 50 7297197";return info
 _ai._db_get_clinic_info=_safe_info
 _original_normalize=_catalog._normalize_location_type
 def _no_clinic(raw):
@@ -47,3 +48,9 @@ def _language_prompt(service_name=""):
 _ai.render_language_prompt=_language_prompt
 
 app=_main.app
+
+# Serve the four original clinic JPG flyers. Chat responses expose these under
+# the `flyers` field and website clients can render them directly.
+_ASSETS_DIR=Path(__file__).parent / "assets"
+if _ASSETS_DIR.exists():
+    app.mount("/assets", _main.StaticFiles(directory=str(_ASSETS_DIR)), name="clinic-assets")
