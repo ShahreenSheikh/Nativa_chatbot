@@ -1,79 +1,70 @@
-"""Production wrapper around ai.get_ai_response.
-Adds durable session restoration, contextual pronoun resolution, flyer-derived
-intent hints, empathetic phrasing, channel formatting, and brand/contact rules
-without duplicating the large booking state machine in ai.py.
-"""
+"""Production wrapper around ai.get_ai_response."""
 import re
 import ai as _ai
-from service_intents import detect_service_key, is_context_followup, needs_empathy
+from service_intents import detect_service_key,is_context_followup,needs_empathy
 try: import persistent_store as _ps
 except Exception: _ps=None
-
 CONTACT_NUMBER="971 50 7297197"
-SERVICE_LABELS={
- "nanny_training":"Nanny Training / Newborn Care Training",
- "breastfeeding_support":"Breastfeeding Support",
- "postnatal_support":"Postnatal Recovery Support",
- "antenatal_preparation":"Antenatal Preparation & Education",
-}
+SERVICE_LABELS={"nanny_training":"Nanny Training / Newborn Care Training","breastfeeding_support":"Breastfeeding Support","postnatal_support":"Postnatal Recovery Support","antenatal_preparation":"Antenatal Preparation & Education"}
+GREETING_ALIASES={"hi","hey","hiya","hello","salam","assalamualaikum","assalamu alaikum","good morning","good afternoon","good evening"}
 
-def _restore(session_id):
-    if not (_ps and _ps.ENABLED) or session_id in _ai._sessions:return
-    saved=_ps.load_session(session_id)
-    if saved:_ai._sessions[session_id]=saved
-
-def _persist(session_id):
-    if _ps and _ps.ENABLED and session_id in _ai._sessions:
-        _ps.save_session(session_id,_ai._sessions[session_id])
-
-def _normalize_phone(text):
-    if not text:return text
-    # Normalize every known NativaCare number variant to the client-approved format.
-    patterns=[r"\+?971\s*50\s*729\s*7197",r"\+?971\s*\(?0?\)?\s*50\s*729\s*7197",r"\+?971\s*50\s*7297\s*197",r"\+?971507297197"]
-    for p in patterns:text=re.sub(p,CONTACT_NUMBER,text,flags=re.I)
-    return text
-
-def _strip_physical_office_claims(text):
-    if not text:return text
-    # NativaCare no longer has a physical office. Avoid leaking stale sheet/site copy.
-    text=re.sub(r"(?im)^\s*(?:Address|Clinic address)\s*:[^\n]*\n?","",text)
-    text=re.sub(r"\bat the clinic\b","as a home-based or virtual service",text,flags=re.I)
-    text=re.sub(r"\bvisit (?:our|the) (?:clinic|office)\b","use a home-based or virtual appointment",text,flags=re.I)
-    return text
-
-def _channel_format(text,source):
-    text=_normalize_phone(_strip_physical_office_claims(text or ""))
+def _restore(sid):
+    if _ps and _ps.ENABLED and sid not in _ai._sessions:
+        saved=_ps.load_session(sid)
+        if saved:_ai._sessions[sid]=saved
+def _persist(sid):
+    if _ps and _ps.ENABLED and sid in _ai._sessions:_ps.save_session(sid,_ai._sessions[sid])
+def _normalize_phone(t):
+    if not t:return t
+    for p in [r"\+?971\s*\(?0?\)?\s*50\s*729\s*7197",r"\+?971\s*50\s*7297\s*197",r"\+?971507297197"]:t=re.sub(p,CONTACT_NUMBER,t,flags=re.I)
+    return t
+def _clean_location(t):
+    if not t:return t
+    t=re.sub(r"(?im)^\s*(?:Address|Clinic address)\s*:[^\n]*\n?","",t)
+    t=re.sub(r"\bat the clinic\b","as a home-based or virtual service",t,flags=re.I)
+    t=re.sub(r"\bvisit (?:our|the) (?:clinic|office)\b","use a home-based or virtual appointment",t,flags=re.I)
+    return t
+def _format(t,source):
+    t=_normalize_phone(_clean_location(t or ""))
     if source!="whatsapp":
-        # Website widget does not render Markdown consistently; remove raw emphasis markers.
-        text=text.replace("**","")
-        text=re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)",r"\1",text)
-    return text
-
-def _empathy_prefix(message,reply):
+        t=t.replace("**","");t=re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)",r"\1",t)
+    return t
+def _empathy(message,reply):
     if not needs_empathy(message):return reply
-    low=(reply or "").lower()
-    if any(x in low[:180] for x in ("i'm sorry","i’m sorry","that sounds","understandably","sorry you're","sorry you’re")):return reply
-    return "I'm sorry you're dealing with this. That can feel difficult and overwhelming. " + (reply or "")
+    if any(x in (reply or "").lower()[:180] for x in ("i'm sorry","i’m sorry","that sounds","understandably","sorry you're","sorry you’re")):return reply
+    return "I'm sorry you're dealing with this. That can feel difficult and overwhelming. "+(reply or "")
+def _is_price_question(m):return any(x in (m or "").lower() for x in ("price","cost","how much","fee","charges","aed"))
+async def _price_fallback(service_key):
+    if not service_key:return ""
+    labels={"nanny_training":["nanny","caregiver"],"breastfeeding_support":["breastfeeding","lactation"],"postnatal_support":["postnatal","postpartum","recovery"],"antenatal_preparation":["antenatal","prenatal","pregnancy"]}
+    services=await _ai.get_services();matches=[]
+    for s in services:
+        hay=" ".join(str(s.get(k,"") or "") for k in ("service_name","family_name","category","keywords")).lower()
+        if any(k in hay for k in labels.get(service_key,[])) and s.get("default_price_aed"):
+            matches.append((s.get("service_name"),str(s.get("default_price_aed"))))
+    unique=[]
+    for x in matches:
+        if x not in unique:unique.append(x)
+    if len(unique)==1:return f"The current price for {unique[0][0]} is AED {unique[0][1]}."
+    if unique:return "Current options are: "+"; ".join(f"{n} — AED {p}" for n,p in unique[:6])+"."
+    return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at 971 50 7297197 for the current price."
 
 async def get_ai_response(session_id: str,user_message: str,source: str="website"):
-    _restore(session_id)
-    session=_ai._sessions.get(session_id)
-    service_key=detect_service_key(user_message)
+    _restore(session_id);session=_ai._sessions.get(session_id);service_key=detect_service_key(user_message)
     if session and service_key:session["last_discussed_service_key"]=service_key
-    # Resolve "it/this/that" against the last service before NLU sees the turn.
-    if session and not service_key and is_context_followup(user_message):
-        previous=session.get("last_discussed_service_key")
-        if previous:
-            user_message_for_ai=f"{user_message} (context: this refers to {SERVICE_LABELS.get(previous,previous)})"
-        else:user_message_for_ai=user_message
-    else:user_message_for_ai=user_message
-    result=await _ai.get_ai_response(session_id,user_message_for_ai,source)
-    session=_ai._sessions.get(session_id)
+    previous=(session or {}).get("last_discussed_service_key")
+    # Make greeting aliases deterministic so hi/hey behave like hello.
+    normalized=(user_message or "").strip().lower().rstrip("!.,")
+    message_for_ai="hello" if normalized in GREETING_ALIASES else user_message
+    if session and not service_key and is_context_followup(user_message) and previous:
+        message_for_ai=f"{message_for_ai} (context: this refers to {SERVICE_LABELS.get(previous,previous)})"
+    result=await _ai.get_ai_response(session_id,message_for_ai,source);session=_ai._sessions.get(session_id)
     if session:
-        detected=service_key or session.get("last_discussed_service_key")
+        detected=service_key or previous
         if detected:session["last_discussed_service_key"]=detected
     reply=result.get("reply","")
-    reply=_empathy_prefix(user_message,reply)
-    result["reply"]=_channel_format(reply,source)
-    _persist(session_id)
-    return result
+    active_key=service_key or (session or {}).get("last_discussed_service_key") or previous
+    # Never emit a bare 'AED' price answer. Use the live catalog or clearly say it is unconfirmed.
+    if _is_price_question(user_message) and not re.search(r"\bAED\s*\d",reply or "",re.I):
+        reply=await _price_fallback(active_key)
+    reply=_empathy(user_message,reply);result["reply"]=_format(reply,source);_persist(session_id);return result
