@@ -1,38 +1,15 @@
 # NativaCare Chatbot — Python dependencies
-# Install with:  pip install -r requirements.txt
-# Tested against Python 3.10+.
-
-# ---------- Web framework ----------
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
-
-# ---------- Data + validation ----------
 pydantic==2.9.2
 python-dotenv==1.0.1
-
-# ---------- HTTP clients ----------
 httpx==0.27.2
-
-# ---------- LLM (Cerebras uses the OpenAI-compatible SDK) ----------
 openai==1.54.0
-
-# ---------- Date parsing ----------
 dateparser==1.2.0
-
-# ---------- Google Calendar (only needed if GOOGLE_CALENDAR_ID is set) ----------
 google-api-python-client==2.149.0
 google-auth==2.35.0
 google-auth-httplib2==0.2.0
-
-# ---------- Persistent storage (invoices, appointments, payment proofs) ----------
 sqlalchemy==2.0.35
-
-# ---------- File uploads (payment screenshots via POST /invoices/{id}/proof) ----------
+psycopg2-binary==2.9.9
 python-multipart==0.0.12
-
-# ---------- PDF invoice generation ----------
-# Pure Python, no system dependencies (unlike weasyprint, which needs
-# Cairo/Pango installed at the OS level) — installs cleanly on Railway's
-# default buildpack with nothing extra. Free: runs entirely in-process,
-# no external API or per-document cost.
 fpdf2==2.8.1
