@@ -12,6 +12,9 @@ SERVICE_HELP={
 "postnatal_support":"We have something that can help you through this. Our postnatal recovery support provides personalised guidance for physical recovery, feeding, wellbeing and the challenges that can come after birth.",
 "antenatal_preparation":"We have something that can help you feel more prepared and supported. Our antenatal preparation provides practical guidance for pregnancy, labour, birth, breastfeeding and the early days with your baby."
 }
+# The original clinic flyers are served by the backend. We return media
+# separately from reply text so website/widget clients can render real images.
+ALL_FLYERS=["/assets/flyer1.jpg","/assets/flyer2.jpg","/assets/flyer3.jpg","/assets/flyer4.jpg"]
 GREETING_ALIASES={"hi","hey","hiya","hello","salam","assalamualaikum","assalamu alaikum","good morning","good afternoon","good evening"}
 
 def _restore(sid):
@@ -37,7 +40,7 @@ def _format(t,source):
     return t
 def _empathy(message,reply,service_key=None):
     if not needs_empathy(message):return reply
-    existing=(reply or "").lower()[:300]
+    existing=(reply or "").lower()[:500]
     prefix=""
     if not any(x in existing for x in ("i'm sorry","i’m sorry","that sounds","understandably","sorry you're","sorry you’re")):
         prefix="I'm sorry you're dealing with this. That can feel difficult and overwhelming. "
@@ -62,13 +65,25 @@ async def _price_fallback(service_key):
     return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at +971 50 7297197 for the current price."
 
 async def get_ai_response(session_id: str,user_message: str,source: str="website"):
-    _restore(session_id);session=_ai._sessions.get(session_id);service_key=detect_service_key(user_message)
-    if session and service_key:session["last_discussed_service_key"]=service_key
-    previous=(session or {}).get("last_discussed_service_key")
+    _restore(session_id);session=_ai._sessions.get(session_id)
     normalized=(user_message or "").strip().lower().rstrip("!.,")
+    previous=(session or {}).get("last_discussed_service_key")
+    service_key=detect_service_key(user_message)
+
+    # Context fix: after Breastfeeding & Lactation options have been shown,
+    # a short reply such as "antenatal" / typo "antental" means the
+    # Antenatal Breastfeeding Preparation option from THAT list. It must not
+    # jump to the unrelated Antenatal Education & Preparation family.
+    if previous=="breastfeeding_support" and normalized in {"antenatal","antental","prenatal","antenatal prep","antental prep"}:
+        service_key="breastfeeding_support"
+        user_message="antenatal breastfeeding preparation"
+        normalized=user_message
+
+    if session and service_key:session["last_discussed_service_key"]=service_key
     message_for_ai="hello" if normalized in GREETING_ALIASES else user_message
     if session and not service_key and is_context_followup(user_message) and previous:
         message_for_ai=f"{message_for_ai} (context: this refers to {SERVICE_LABELS.get(previous,previous)})"
+
     result=await _ai.get_ai_response(session_id,message_for_ai,source);session=_ai._sessions.get(session_id)
     if session:
         detected=service_key or previous
@@ -76,4 +91,14 @@ async def get_ai_response(session_id: str,user_message: str,source: str="website
     reply=result.get("reply","")
     active_key=service_key or (session or {}).get("last_discussed_service_key") or previous
     if _is_price_question(user_message) and not re.search(r"\bAED\s*\d",reply or "",re.I):reply=await _price_fallback(active_key)
-    reply=_empathy(user_message,reply,active_key);result["reply"]=_format(reply,source);_persist(session_id);return result
+    reply=_empathy(user_message,reply,active_key)
+    result["reply"]=_format(reply,source)
+
+    # Let capable clients display the actual clinic flyers as images. Do not
+    # attach them to greetings; attach them when a service is being discussed.
+    if active_key and result.get("reply"):
+        result["flyers"]=ALL_FLYERS
+    else:
+        result["flyers"]=[]
+    result["service_context"]=active_key
+    _persist(session_id);return result
