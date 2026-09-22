@@ -29,13 +29,45 @@ app=FastAPI(title=f"{CLINIC_NAME} — Midwifery Chatbot",version="0.1.0")
 app.add_middleware(CORSMiddleware,allow_origins=["*"],allow_methods=["*"],allow_headers=["*"])
 _STATIC_DIR=Path(__file__).parent/"static"
 if _STATIC_DIR.exists():app.mount("/static",StaticFiles(directory=str(_STATIC_DIR)),name="static")
-# Public clinic media used by chat responses.
 _ASSETS_DIR=Path(__file__).parent/"assets"
 if _ASSETS_DIR.exists():app.mount("/assets",StaticFiles(directory=str(_ASSETS_DIR)),name="assets")
 app.mount("/uploads",StaticFiles(directory=str(UPLOADS_DIR)),name="uploads")
 _DASHBOARD_DIR=Path(__file__).parent/"dashboard"
 if _DASHBOARD_DIR.exists():app.mount("/dashboard",StaticFiles(directory=str(_DASHBOARD_DIR),html=True),name="dashboard")
 _WIDGET_PATH=Path(__file__).parent/"widget.js"
+
+# Flyer mapping. Keep this centralized so every website response shows only
+# the material relevant to the service currently being discussed.
+_SERVICE_FLYERS={
+    "postnatal":"/assets/flyer1.jpg",
+    "antenatal":"/assets/flyer2.jpg",
+    "nanny":"/assets/flyer3.jpg",
+    "breastfeeding":"/assets/flyer4.jpg",
+}
+_ALL_FLYERS=list(_SERVICE_FLYERS.values())
+
+def _select_flyers(user_message:str,reply:str):
+    text=f"{user_message or ''} {reply or ''}".lower()
+    user=(user_message or "").lower()
+    # Broad service requests intentionally show the complete flyer set.
+    broad_phrases=("all services","all your services","what services","which services","services do you offer","services you offer","show me all","everything you offer")
+    if any(p in user for p in broad_phrases):return _ALL_FLYERS
+    selected=[]
+    keyword_groups={
+        "breastfeeding":("breastfeed","breastfeeding","latch","latching","lactation","colostrum","milk supply","nursing"),
+        "antenatal":("antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"),
+        "postnatal":("postnatal","postpartum","after birth","recovery support","new mother recovery","newborn support"),
+        "nanny":("nanny","caregiver training","care giver training"),
+    }
+    # Prefer what the user actually asked about. The reply can contain names
+    # of adjacent services, so user-message matches are more precise.
+    for key,words in keyword_groups.items():
+        if any(w in user for w in words):selected.append(_SERVICE_FLYERS[key])
+    if not selected:
+        for key,words in keyword_groups.items():
+            if any(w in text for w in words):selected.append(_SERVICE_FLYERS[key])
+    return list(dict.fromkeys(selected))
+
 @app.get("/widget.js",include_in_schema=False)
 def widget_js():
     if not _WIDGET_PATH.exists():raise HTTPException(status_code=404,detail="widget.js not found")
@@ -54,7 +86,12 @@ def status():
 @app.post("/chat")
 async def chat(req:ChatRequest):
     try:
-        result=await get_ai_response(session_id=req.session_id,user_message=req.message,source=req.source or "website");result["session_id"]=req.session_id;return result
+        result=await get_ai_response(session_id=req.session_id,user_message=req.message,source=req.source or "website")
+        result["session_id"]=req.session_id
+        # Do not trust a generic/all-flyers payload from the AI layer. Select
+        # flyers deterministically from the current conversation turn.
+        if (req.source or "website")=="website":result["flyers"]=_select_flyers(req.message,result.get("reply",""))
+        return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
 @app.get("/chat/{session_id}/poll",include_in_schema=False)
 def poll_chat(session_id:str,after_id:int=0):
