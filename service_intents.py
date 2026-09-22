@@ -11,7 +11,7 @@ SERVICE_KEYWORDS = {
 # "newborn" deliberately is NOT a blind nanny-training keyword: breastfeeding
 # and postnatal conversations often mention a newborn too. It only becomes a
 # nanny-training signal when caregiver/training vocabulary is present.
-EMPATHY_SIGNALS = ["struggling","hard time","worried","worry","anxious","anxiety","overwhelmed","painful","hurts","hurt","pain","scared","difficult","exhausted","can't cope","cant cope","not coping","upset"]
+EMPATHY_SIGNALS = ["struggling","struggle","having trouble","having problems","problem with","problems with","issue with","issues with","hard time","worried","worry","anxious","anxiety","overwhelmed","painful","hurts","hurt","pain","scared","difficult","difficulty","exhausted","can't cope","cant cope","not coping","upset","won't latch","wont latch","poor latch","not latching","low milk supply","sore nipples","cracked nipples","engorgement","mastitis","blocked ducts","bleeding","tear","episiotomy","stitches","c-section pain","c section pain","low mood","fatigue"]
 FOLLOWUP_PRONOUNS = ["it","this","that","this service","that service","tell me more","more about it","how much is it","price of it","cost of it","book it","book this","availability for it"]
 
 def detect_service_key(message: str):
@@ -27,5 +27,12 @@ def is_context_followup(message: str):
     return any(p in m for p in FOLLOWUP_PRONOUNS)
 
 def needs_empathy(message: str):
+    """True when the patient is describing a difficulty, symptom or concern.
+
+    This intentionally keys off problem-language as well as emotional words:
+    patients often say 'having problems with latching' without saying they are
+    worried or in pain. Those messages still need acknowledgement before the
+    bot presents services or prices.
+    """
     m=(message or "").lower()
     return any(x in m for x in EMPATHY_SIGNALS)
