@@ -1,7 +1,5 @@
 """FastAPI entry point for the NativaCare chatbot."""
-import os
-import re
-import uuid
+import os,re,uuid,base64
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,12 +14,9 @@ from database import get_saved_appointments
 from logger import get_chat_logs,get_chat_logs_for_session
 from availability import get_availability,get_next_available_days
 from whatsapp_service import send_whatsapp_message,verify_webhook_signature,parse_incoming_messages,parse_message_echoes,download_media,WHATSAPP_VERIFY_TOKEN
-import db
-db.init_db()
-import payments
-import invoice_pdf
-CLINIC_NAME=os.getenv("CLINIC_NAME","NativaCare")
-ADMIN_API_KEY=os.getenv("ADMIN_API_KEY","").strip()
+import db; db.init_db()
+import payments,invoice_pdf
+CLINIC_NAME=os.getenv("CLINIC_NAME","NativaCare");ADMIN_API_KEY=os.getenv("ADMIN_API_KEY","").strip()
 def require_admin(x_admin_key:str=Header(default="")):
     if ADMIN_API_KEY and x_admin_key!=ADMIN_API_KEY:raise HTTPException(status_code=401,detail="Missing or invalid X-Admin-Key header")
 UPLOADS_DIR=Path(os.getenv("UPLOADS_DIR","uploads"));UPLOADS_DIR.mkdir(parents=True,exist_ok=True)
@@ -35,38 +30,31 @@ app.mount("/uploads",StaticFiles(directory=str(UPLOADS_DIR)),name="uploads")
 _DASHBOARD_DIR=Path(__file__).parent/"dashboard"
 if _DASHBOARD_DIR.exists():app.mount("/dashboard",StaticFiles(directory=str(_DASHBOARD_DIR),html=True),name="dashboard")
 _WIDGET_PATH=Path(__file__).parent/"widget.js"
-
-# Flyer mapping. Keep this centralized so every website response shows only
-# the material relevant to the service currently being discussed.
-_SERVICE_FLYERS={
-    "postnatal":"/assets/flyer1.jpg",
-    "antenatal":"/assets/flyer2.jpg",
-    "nanny":"/assets/flyer3.jpg",
-    "breastfeeding":"/assets/flyer4.jpg",
-}
-_ALL_FLYERS=list(_SERVICE_FLYERS.values())
+_SERVICE_FLYERS={"postnatal":"/assets/flyer1.jpg","antenatal":"/assets/flyer2.jpg","nanny":"/assets/flyer3.jpg","breastfeeding":"/assets/flyer4.jpg"};_ALL_FLYERS=list(_SERVICE_FLYERS.values())
 
 def _select_flyers(user_message:str,reply:str):
-    text=f"{user_message or ''} {reply or ''}".lower()
-    user=(user_message or "").lower()
-    # Broad service requests intentionally show the complete flyer set.
-    broad_phrases=("all services","all your services","what services","which services","services do you offer","services you offer","show me all","everything you offer")
-    if any(p in user for p in broad_phrases):return _ALL_FLYERS
+    user=(user_message or "").lower();answer=(reply or "").lower()
+    # Flyers are for service discovery/selection only. Never repeat them once
+    # booking has moved to language/date/time/contact/payment steps.
+    booking_markers=("in which language would you like","available days","reply with a date","available times","reply with a time","what is your name","phone number","email address","booking summary","confirm your booking","payment","bank transfer")
+    if any(x in answer for x in booking_markers):return []
+    broad=("all services","all your services","what services","which services","services do you offer","services you offer","other services","what other services","show me all","everything you offer")
+    if any(p in user for p in broad):return _ALL_FLYERS
+    groups={"breastfeeding":("breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"),"antenatal":("antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"),"postnatal":("postnatal","postpartum","after birth","recovery support","new mother recovery"),"nanny":("nanny","caregiver training","care giver training","newborn training")}
     selected=[]
-    keyword_groups={
-        "breastfeeding":("breastfeed","breastfeeding","latch","latching","lactation","colostrum","milk supply","nursing"),
-        "antenatal":("antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"),
-        "postnatal":("postnatal","postpartum","after birth","recovery support","new mother recovery","newborn support"),
-        "nanny":("nanny","caregiver training","care giver training"),
-    }
-    # Prefer what the user actually asked about. The reply can contain names
-    # of adjacent services, so user-message matches are more precise.
-    for key,words in keyword_groups.items():
+    for key,words in groups.items():
         if any(w in user for w in words):selected.append(_SERVICE_FLYERS[key])
-    if not selected:
-        for key,words in keyword_groups.items():
-            if any(w in text for w in words):selected.append(_SERVICE_FLYERS[key])
+    # Show a flyer on a service-selection response even when the user's wording
+    # was generic (e.g. "tell me about it"), but don't inherit it forever.
+    if not selected and any(x in answer for x in ("has a few options","which would you like","service options")):
+        for key,words in groups.items():
+            if any(w in answer for w in words):selected.append(_SERVICE_FLYERS[key])
     return list(dict.fromkeys(selected))
+
+def _normalize_language_prompt(reply):
+    if "In which language would you like your session?" not in (reply or ""):return reply
+    prefix=reply.split("In which language would you like your session?",1)[0]
+    return prefix+"In which language would you like your session?\n\n  • English\n  • Arabic (upon availability)\n  • French\n\nReply with 'English', 'Arabic', or 'French'."
 
 @app.get("/widget.js",include_in_schema=False)
 def widget_js():
@@ -75,21 +63,13 @@ def widget_js():
 @app.get("/",include_in_schema=False)
 def root():
     index=_STATIC_DIR/"index.html"
-    if index.exists():return FileResponse(index)
-    return JSONResponse({"status":"ok","service":f"{CLINIC_NAME} — Midwifery Chatbot","version":"0.1.0","note":"static/index.html not found — UI disabled, API still works","docs":"/docs"})
+    return FileResponse(index) if index.exists() else JSONResponse({"status":"ok","service":f"{CLINIC_NAME} — Midwifery Chatbot","docs":"/docs"})
 @app.get("/health")
 def health():return {"status":"ok","service":f"{CLINIC_NAME} — Midwifery Chatbot","version":"0.1.0"}
-@app.get("/status")
-def status():
-    import whatsapp_service as wa
-    return {"website_chat":{"status":"connected"},"whatsapp":{"status":"connected" if (wa.WHATSAPP_ACCESS_TOKEN and wa.WHATSAPP_PHONE_NUMBER_ID) else "not_connected"},"calendar":{"status":"connected" if os.getenv("GOOGLE_CALENDAR_ID") else "not_connected"},"email":{"status":"connected" if os.getenv("RESEND_API_KEY") else "not_connected"},"payment_enabled":os.getenv("PAYMENT_ENABLED","false").lower() in ("true","1","yes","on")}
 @app.post("/chat")
 async def chat(req:ChatRequest):
     try:
-        result=await get_ai_response(session_id=req.session_id,user_message=req.message,source=req.source or "website")
-        result["session_id"]=req.session_id
-        # Do not trust a generic/all-flyers payload from the AI layer. Select
-        # flyers deterministically from the current conversation turn.
+        result=await get_ai_response(session_id=req.session_id,user_message=req.message,source=req.source or "website");result["session_id"]=req.session_id;result["reply"]=_normalize_language_prompt(result.get("reply",""))
         if (req.source or "website")=="website":result["flyers"]=_select_flyers(req.message,result.get("reply",""))
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
@@ -107,6 +87,58 @@ def chat_logs():return {"chat_logs":get_chat_logs()}
 async def availability(service_id:str,date:str):return await get_availability(service_id,date)
 @app.get("/availability/next")
 async def availability_next(service_id:str,num_days:int=7):return await get_next_available_days(service_id,num_days=num_days)
+
+# Payment proof uploads: images <=10 MB; PDFs <=15 MB. Bytes are stored in
+# PostgreSQL so Railway redeploys cannot delete the proof.
+_IMAGE_TYPES={"image/jpeg","image/png"};_PDF_TYPE="application/pdf";_IMAGE_MAX=10*1024*1024;_PDF_MAX=15*1024*1024
+@app.post("/invoices/{invoice_id}/proof")
+async def upload_payment_proof(invoice_id:int,file:UploadFile=File(...)):
+    invoice=db.get_invoice(invoice_id)
+    if not invoice:raise HTTPException(status_code=404,detail="Invoice not found")
+    ctype=(file.content_type or "").lower();name=file.filename or "payment-proof"
+    ext=Path(name).suffix.lower()
+    if ctype not in _IMAGE_TYPES|{_PDF_TYPE} or (ctype==_PDF_TYPE and ext!=".pdf") or (ctype in _IMAGE_TYPES and ext not in {".jpg",".jpeg",".png"}):
+        raise HTTPException(status_code=415,detail="Payment proof must be JPG, JPEG, PNG or PDF.")
+    limit=_PDF_MAX if ctype==_PDF_TYPE else _IMAGE_MAX
+    data=await file.read(limit+1)
+    if len(data)>limit:raise HTTPException(status_code=413,detail=("PDF is too large. Maximum size is 15 MB." if ctype==_PDF_TYPE else "Image is too large. Maximum size is 10 MB."))
+    # lightweight signature validation; do not trust MIME/extension alone
+    valid=(ctype==_PDF_TYPE and data.startswith(b"%PDF-")) or (ctype=="image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")) or (ctype=="image/jpeg" and data.startswith(b"\xff\xd8\xff"))
+    if not valid:raise HTTPException(status_code=415,detail="The uploaded file does not match its declared file type.")
+    proof=db.add_payment_proof(invoice_id,source="website",file_bytes=data,content_type=ctype,original_filename=name)
+    db.update_invoice_status(invoice_id,"submitted")
+    updated=db.get_invoice(invoice_id)
+    try:await payments.notify_owner_of_payment_proof(updated)
+    except Exception as e:print(f"[Payment proof notification] {e}")
+    return {"status":"submitted","proof":{"id":proof["id"],"file_path":proof["file_path"],"content_type":ctype,"original_filename":name,"file_size":len(data)}}
+
+@app.get("/payment-proofs/{proof_id}")
+def payment_proof_file(proof_id:int):
+    proof=db.get_payment_proof(proof_id)
+    if not proof or not proof.get("file_data_b64"):raise HTTPException(status_code=404,detail="Payment proof not found")
+    try:data=base64.b64decode(proof["file_data_b64"])
+    except Exception:raise HTTPException(status_code=500,detail="Stored payment proof is invalid")
+    filename=proof.get("original_filename") or f"payment-proof-{proof_id}"
+    disposition="inline" if proof.get("content_type")==_PDF_TYPE else "inline"
+    return Response(content=data,media_type=proof.get("content_type") or "application/octet-stream",headers={"Content-Disposition":f'{disposition}; filename="{filename.replace(chr(34),"")}"',"Cache-Control":"private, max-age=300"})
+
+@app.get("/invoices",dependencies=[Depends(require_admin)])
+def invoices(status:str=""):
+    return {"invoices":db.list_invoices(status or None)}
+@app.get("/invoices/{invoice_id}",dependencies=[Depends(require_admin)])
+def invoice_detail(invoice_id:int):
+    inv=db.get_invoice(invoice_id)
+    if not inv:raise HTTPException(status_code=404,detail="Invoice not found")
+    proofs=db.list_proofs_for_invoice(invoice_id)
+    # Never send stored base64 bytes in dashboard JSON.
+    for p in proofs:p.pop("file_data_b64",None)
+    inv["proofs"]=proofs;return {"invoice":inv}
+@app.post("/invoices/{invoice_id}/approve",dependencies=[Depends(require_admin)])
+async def approve_payment(invoice_id:int):return await payments.approve_invoice(invoice_id)
+class RejectBody(BaseModel):reason:str=""
+@app.post("/invoices/{invoice_id}/reject",dependencies=[Depends(require_admin)])
+async def reject_payment(invoice_id:int,body:RejectBody):return await payments.reject_invoice(invoice_id,body.reason)
+
 @app.get("/webhook/whatsapp")
 def verify_whatsapp_webhook(request:Request):
     q=request.query_params
