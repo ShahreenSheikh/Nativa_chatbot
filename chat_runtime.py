@@ -33,8 +33,14 @@ def _clean_location(t):
     t=re.sub(r"\bat the clinic\b","as a home-based or virtual service",t,flags=re.I)
     t=re.sub(r"\bvisit (?:our|the) (?:clinic|office)\b","use a home-based or virtual appointment",t,flags=re.I)
     return t
+def _remove_demo_notice(t):
+    if not t:return t
+    # Production safeguard: old clinic_info rows can still have demo_mode=TRUE.
+    # Never expose the obsolete demo/placeholder banner in production replies.
+    t=re.sub(r"(?is)^\s*\[?Note:\s*this is a demo deployment with placeholder\s+data\s*[—-]\s*please verify any details with the clinic\.\]?\s*", "", t)
+    return t.lstrip()
 def _format(t,source):
-    t=_normalize_phone(_clean_location(t or ""))
+    t=_remove_demo_notice(_normalize_phone(_clean_location(t or "")))
     if source!="whatsapp":
         t=t.replace("**","");t=re.sub(r"(?<!\w)\*([^*\n]+)\*(?!\w)",r"\1",t)
     return t
