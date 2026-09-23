@@ -12,10 +12,14 @@ SERVICE_HELP={
 "postnatal_support":"We have something that can help you through this. Our postnatal recovery support provides personalised guidance for physical recovery, feeding, wellbeing and the challenges that can come after birth.",
 "antenatal_preparation":"We have something that can help you feel more prepared and supported. Our antenatal preparation provides practical guidance for pregnancy, labour, birth, breastfeeding and the early days with your baby."
 }
-# The original clinic flyers are served by the backend. We return media
-# separately from reply text so website/widget clients can render real images.
 ALL_FLYERS=["/assets/flyer1.jpg","/assets/flyer2.jpg","/assets/flyer3.jpg","/assets/flyer4.jpg"]
 GREETING_ALIASES={"hi","hey","hiya","hello","salam","assalamualaikum","assalamu alaikum","good morning","good afternoon","good evening"}
+SERVICE_LIST_PATTERNS=(
+    "what other services", "what services", "other services", "services do you have",
+    "services you have", "what else do you offer", "what else you offer",
+    "what do you offer", "show me your services", "show your services",
+    "list your services", "service list", "all services", "other options do you have",
+)
 
 def _restore(sid):
     if _ps and _ps.ENABLED and sid not in _ai._sessions:
@@ -35,8 +39,6 @@ def _clean_location(t):
     return t
 def _remove_demo_notice(t):
     if not t:return t
-    # Production safeguard: old clinic_info rows can still have demo_mode=TRUE.
-    # Never expose the obsolete demo/placeholder banner in production replies.
     t=re.sub(r"(?is)^\s*\[?Note:\s*this is a demo deployment with placeholder\s+data\s*[—-]\s*please verify any details with the clinic\.\]?\s*", "", t)
     return t.lstrip()
 def _format(t,source):
@@ -55,6 +57,9 @@ def _empathy(message,reply,service_key=None):
         prefix+=help_line+" "
     return prefix+(reply or "")
 def _is_price_question(m):return any(x in (m or "").lower() for x in ("price","cost","how much","fee","charges","aed"))
+def _is_service_list_question(m):
+    text=re.sub(r"\s+"," ",(m or "").strip().lower())
+    return any(p in text for p in SERVICE_LIST_PATTERNS)
 async def _price_fallback(service_key):
     if not service_key:return ""
     labels={"nanny_training":["nanny","caregiver"],"breastfeeding_support":["breastfeeding","lactation"],"postnatal_support":["postnatal","postpartum","recovery"],"antenatal_preparation":["antenatal","prenatal","pregnancy"]}
@@ -76,10 +81,24 @@ async def get_ai_response(session_id: str,user_message: str,source: str="website
     previous=(session or {}).get("last_discussed_service_key")
     service_key=detect_service_key(user_message)
 
-    # Context fix: after Breastfeeding & Lactation options have been shown,
-    # a short reply such as "antenatal" / typo "antental" means the
-    # Antenatal Breastfeeding Preparation option from THAT list. It must not
-    # jump to the unrelated Antenatal Education & Preparation family.
+    # Global navigation intent: users can ask to browse the clinic's other
+    # services even while they are inside a variant picker. The core state
+    # machine otherwise interprets any message there as an attempted variant
+    # choice and repeats "Sorry, I didn't catch which one". Exit that picker
+    # cleanly and ask the core renderer for the real service catalog instead.
+    browse_all_services=_is_service_list_question(user_message)
+    if session and browse_all_services:
+        session["state"]=_ai.STATE_BROWSING
+        session.pop("candidate_service",None)
+        session.pop("variant_family",None)
+        session.pop("awaiting_field",None)
+        session["lead"]={}
+        service_key=None
+        previous=None
+        session.pop("last_discussed_service_key",None)
+        user_message="what services do you offer?"
+        normalized=user_message
+
     if previous=="breastfeeding_support" and normalized in {"antenatal","antental","prenatal","antenatal prep","antental prep"}:
         service_key="breastfeeding_support"
         user_message="antenatal breastfeeding preparation"
@@ -100,9 +119,10 @@ async def get_ai_response(session_id: str,user_message: str,source: str="website
     reply=_empathy(user_message,reply,active_key)
     result["reply"]=_format(reply,source)
 
-    # Let capable clients display the actual clinic flyers as images. Do not
-    # attach them to greetings; attach them when a service is being discussed.
-    if active_key and result.get("reply"):
+    # A general catalog question should not inherit flyers from the service
+    # the user was previously viewing. This also prevents duplicate flyers
+    # when navigating away from a specific service.
+    if active_key and result.get("reply") and not browse_all_services:
         result["flyers"]=ALL_FLYERS
     else:
         result["flyers"]=[]
