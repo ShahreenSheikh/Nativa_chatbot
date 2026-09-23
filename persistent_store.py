@@ -1,47 +1,38 @@
-"""Durable NativaCare storage.
-
-When DATABASE_URL is set (recommended: Railway PostgreSQL), this module
-stores appointments, invoices, payment-proof metadata, conversation takeover
-state, complete chat logs, and chatbot session/context in PostgreSQL.
-Nothing important depends on the Railway app container filesystem.
-"""
-import os, json, secrets
+"""Durable NativaCare storage using Railway PostgreSQL."""
+import os, json, secrets, base64
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, text, inspect
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-ENABLED = bool(DATABASE_URL)
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
-
-Base = declarative_base()
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300) if ENABLED else None
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False) if ENABLED else None
-
+DATABASE_URL=os.getenv("DATABASE_URL","").strip(); ENABLED=bool(DATABASE_URL)
+if DATABASE_URL.startswith("postgres://"): DATABASE_URL="postgresql://"+DATABASE_URL[len("postgres://"):]
+Base=declarative_base(); engine=create_engine(DATABASE_URL,pool_pre_ping=True,pool_recycle=300) if ENABLED else None
+SessionLocal=sessionmaker(bind=engine,autoflush=False,autocommit=False) if ENABLED else None
 def _now(): return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 class Appointment(Base):
-    __tablename__="appointments"
-    id=Column(Integer,primary_key=True); session_id=Column(String,default=""); patient_name=Column(String,default=""); email=Column(String,default=""); phone=Column(String,default=""); service_id=Column(String,default=""); service_name=Column(String,default=""); midwife_id=Column(String,default=""); midwife_name=Column(String,default=""); location_type=Column(String,default=""); patient_address=Column(String,default=""); appointment_date=Column(String,default=""); appointment_time=Column(String,default=""); duration_minutes=Column(Integer,default=60); price_aed=Column(String,default=""); package_id=Column(String,default=""); language=Column(String,default="en"); source=Column(String,default="website"); status=Column(String,default="pending"); notes=Column(Text,default=""); payment_status=Column(String,default=""); invoice_id=Column(Integer,default=0); additional_visits_json=Column(Text,default="[]"); created_at=Column(String,default=_now)
+    __tablename__="appointments"; id=Column(Integer,primary_key=True); session_id=Column(String,default=""); patient_name=Column(String,default=""); email=Column(String,default=""); phone=Column(String,default=""); service_id=Column(String,default=""); service_name=Column(String,default=""); midwife_id=Column(String,default=""); midwife_name=Column(String,default=""); location_type=Column(String,default=""); patient_address=Column(String,default=""); appointment_date=Column(String,default=""); appointment_time=Column(String,default=""); duration_minutes=Column(Integer,default=60); price_aed=Column(String,default=""); package_id=Column(String,default=""); language=Column(String,default="en"); source=Column(String,default="website"); status=Column(String,default="pending"); notes=Column(Text,default=""); payment_status=Column(String,default=""); invoice_id=Column(Integer,default=0); additional_visits_json=Column(Text,default="[]"); created_at=Column(String,default=_now)
 class Invoice(Base):
-    __tablename__="invoices"
-    id=Column(Integer,primary_key=True); reference=Column(String,unique=True,index=True); session_id=Column(String,default=""); channel=Column(String,default="website"); contact=Column(String,default=""); patient_name=Column(String,default=""); amount_aed=Column(String,default=""); bank_account_label=Column(String,default=""); lead_json=Column(Text,default="{}"); status=Column(String,default="pending_proof"); reject_reason=Column(String,default=""); appointment_id=Column(Integer,default=0); action_token=Column(String,default="",index=True); created_at=Column(String,default=_now); updated_at=Column(String,default=_now)
+    __tablename__="invoices"; id=Column(Integer,primary_key=True); reference=Column(String,unique=True,index=True); session_id=Column(String,default=""); channel=Column(String,default="website"); contact=Column(String,default=""); patient_name=Column(String,default=""); amount_aed=Column(String,default=""); bank_account_label=Column(String,default=""); lead_json=Column(Text,default="{}"); status=Column(String,default="pending_proof"); reject_reason=Column(String,default=""); appointment_id=Column(Integer,default=0); action_token=Column(String,default="",index=True); created_at=Column(String,default=_now); updated_at=Column(String,default=_now)
 class PaymentProof(Base):
-    __tablename__="payment_proofs"
-    id=Column(Integer,primary_key=True); invoice_id=Column(Integer,index=True); file_path=Column(String,default=""); source=Column(String,default="website"); created_at=Column(String,default=_now)
+    __tablename__="payment_proofs"; id=Column(Integer,primary_key=True); invoice_id=Column(Integer,index=True); file_path=Column(String,default=""); source=Column(String,default="website"); original_filename=Column(String,default=""); content_type=Column(String,default=""); file_data_b64=Column(Text,default=""); file_size=Column(Integer,default=0); created_at=Column(String,default=_now)
 class Conversation(Base):
-    __tablename__="conversations"
-    session_id=Column(String,primary_key=True); human_mode=Column(Boolean,default=False); channel=Column(String,default=""); contact=Column(String,default=""); updated_at=Column(String,default=_now)
+    __tablename__="conversations"; session_id=Column(String,primary_key=True); human_mode=Column(Boolean,default=False); channel=Column(String,default=""); contact=Column(String,default=""); updated_at=Column(String,default=_now)
 class ChatLog(Base):
-    __tablename__="chat_logs"
-    id=Column(Integer,primary_key=True,autoincrement=True); timestamp=Column(String,default=_now,index=True); session_id=Column(String,index=True); user_message=Column(Text,default=""); ai_response=Column(Text,default="")
+    __tablename__="chat_logs"; id=Column(Integer,primary_key=True,autoincrement=True); timestamp=Column(String,default=_now,index=True); session_id=Column(String,index=True); user_message=Column(Text,default=""); ai_response=Column(Text,default="")
 class ChatSession(Base):
-    __tablename__="chat_sessions"
-    session_id=Column(String,primary_key=True); state_json=Column(Text,default="{}"); updated_at=Column(String,default=_now,index=True)
+    __tablename__="chat_sessions"; session_id=Column(String,primary_key=True); state_json=Column(Text,default="{}"); updated_at=Column(String,default=_now,index=True)
 
 def init_db():
-    if ENABLED: Base.metadata.create_all(engine)
+    if not ENABLED:return
+    Base.metadata.create_all(engine)
+    # create_all does not add columns to an existing table, so migrate the
+    # payment-proof table safely in-place for already-running deployments.
+    existing={c["name"] for c in inspect(engine).get_columns("payment_proofs")}
+    additions={"original_filename":"VARCHAR DEFAULT ''","content_type":"VARCHAR DEFAULT ''","file_data_b64":"TEXT DEFAULT ''","file_size":"INTEGER DEFAULT 0"}
+    with engine.begin() as conn:
+        for name,sqltype in additions.items():
+            if name not in existing: conn.execute(text(f"ALTER TABLE payment_proofs ADD COLUMN {name} {sqltype}"))
 
 def _dict(row): return {c.name:getattr(row,c.name) for c in row.__table__.columns}
 def _appt(row):
@@ -57,10 +48,7 @@ def _inv(row):
 
 def create_appointment(lead):
     with SessionLocal() as s:
-        cols={c.name for c in Appointment.__table__.columns}-{ "id","created_at" }
-        data={k:v for k,v in lead.items() if k in cols}
-        data["duration_minutes"]=int(data.get("duration_minutes") or 60); data["invoice_id"]=int(data.get("invoice_id") or 0); data["additional_visits_json"]=json.dumps(lead.get("additional_visits") or [])
-        a=Appointment(**data); s.add(a); s.commit(); s.refresh(a); return _appt(a)
+        cols={c.name for c in Appointment.__table__.columns}-{"id","created_at"};data={k:v for k,v in lead.items() if k in cols};data["duration_minutes"]=int(data.get("duration_minutes") or 60);data["invoice_id"]=int(data.get("invoice_id") or 0);data["additional_visits_json"]=json.dumps(lead.get("additional_visits") or []);a=Appointment(**data);s.add(a);s.commit();s.refresh(a);return _appt(a)
 def list_appointments():
     with SessionLocal() as s:return [_appt(x) for x in s.query(Appointment).order_by(Appointment.id.desc()).all()]
 def list_appointments_for(midwife_id,date):
@@ -93,9 +81,15 @@ def update_invoice_status(invoice_id,status,**fields):
         for k,v in fields.items():
             if hasattr(x,k):setattr(x,k,v)
         s.commit();s.refresh(x);return _inv(x)
-def add_payment_proof(invoice_id,file_path,source):
+def add_payment_proof(invoice_id,file_path="",source="website",file_bytes=None,content_type="",original_filename=""):
+    data_b64=base64.b64encode(file_bytes or b"").decode("ascii") if file_bytes else ""
     with SessionLocal() as s:
-        x=PaymentProof(invoice_id=invoice_id,file_path=file_path,source=source);s.add(x);s.commit();s.refresh(x);return _dict(x)
+        x=PaymentProof(invoice_id=invoice_id,file_path=file_path,source=source,original_filename=original_filename or "",content_type=content_type or "",file_data_b64=data_b64,file_size=len(file_bytes or b""));s.add(x);s.flush()
+        if not x.file_path:x.file_path=f"/payment-proofs/{x.id}"
+        s.commit();s.refresh(x);return _dict(x)
+def get_payment_proof(proof_id):
+    with SessionLocal() as s:
+        x=s.query(PaymentProof).filter(PaymentProof.id==proof_id).first();return _dict(x) if x else None
 def list_proofs_for_invoice(invoice_id):
     with SessionLocal() as s:return [_dict(x) for x in s.query(PaymentProof).filter(PaymentProof.invoice_id==invoice_id).order_by(PaymentProof.id.desc()).all()]
 def set_human_mode(session_id,enabled,channel="",contact=""):
@@ -141,6 +135,5 @@ def load_session(session_id):
         if isinstance(v,list):return [restore(x) for x in v]
         return v
     return restore(data)
-
 if ENABLED:
-    init_db(); print("[Persistence] PostgreSQL enabled via DATABASE_URL — patient data, conversations and sessions are durable.")
+    init_db();print("[Persistence] PostgreSQL enabled — patient data, chats, sessions and payment proofs are durable.")
