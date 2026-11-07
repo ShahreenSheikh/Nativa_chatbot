@@ -209,51 +209,55 @@ def parse_incoming_messages(payload: dict) -> list:
 
 
 def parse_message_echoes(payload: dict) -> list:
-    """Extract {to, type, text, id, timestamp} dicts for messages staff
-    sent directly from the WhatsApp Business App on their phone — this is
-    what Meta's "Coexistence" feature (a WhatsApp number active in both
-    the Business App and the Cloud API at once) uses to notify your
-    webhook that a human just replied outside the API.
+    """Extract staff-authored WhatsApp Business App echoes.
 
-    This is what makes automatic takeover detection possible: when this
-    fires for a given customer, main.py enables human_mode for that
-    conversation immediately, no dashboard click needed. Requires two
-    things neither of which are code — enabling Coexistence for your
-    number in Meta's WhatsApp Manager, AND subscribing your app to the
-    "smb_message_echoes" webhook field in the Meta App Dashboard (separate
-    from the "messages" field you're presumably already subscribed to).
-    Without both, this webhook payload shape never arrives at all and
-    this function will just never find anything to return — that's the
-    first thing to check if automatic takeover doesn't seem to work.
-
-    Official payload shape (per Meta's smb_message_echoes reference):
-        entry[].changes[].field == "smb_message_echoes"
-        entry[].changes[].value.message_echoes[] == [{from, to, id,
-            timestamp, type, <type>: {...}}]
-    Note "to" here is the CUSTOMER's number (who staff just replied to) —
-    "from" is your own business number, which is not useful for figuring
-    out which conversation to silence.
+    With WhatsApp Coexistence enabled, Meta sends these under the
+    smb_message_echoes webhook field. The to field identifies the customer
+    whose conversation must enter human takeover; from is the business
+    number and must not be used as the conversation key.
     """
     out = []
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             if change.get("field") != "smb_message_echoes":
                 continue
-            value = change.get("value", {})
-            for echo in value.get("message_echoes", []):
-                echo_type = echo.get("type", "")
-                text = ""
-                if echo_type == "text":
-                    text = echo.get("text", {}).get("body", "")
+            value = change.get("value", {}) or {}
+            echoes = value.get("message_echoes", []) or []
+            for echo in echoes:
+                echo = echo or {}
+                echo_type = str(echo.get("type", "") or "").lower()
+
+                recipient = echo.get("to", "")
+                if isinstance(recipient, dict):
+                    recipient = (recipient.get("wa_id") or recipient.get("id")
+                                 or recipient.get("phone_number") or "")
+                elif isinstance(recipient, list):
+                    recipient = recipient[0] if recipient else ""
+                    if isinstance(recipient, dict):
+                        recipient = (recipient.get("wa_id") or recipient.get("id")
+                                     or recipient.get("phone_number") or "")
+
+                text_value = echo.get("text", "")
+                if isinstance(text_value, dict):
+                    text = text_value.get("body", "")
+                elif isinstance(text_value, str):
+                    text = text_value
+                else:
+                    text = ""
+
+                if not text and echo_type in ("image", "video", "document"):
+                    media = echo.get(echo_type, {}) or {}
+                    text = media.get("caption", "") if isinstance(media, dict) else ""
+
                 out.append({
-                    "to": echo.get("to", ""),
+                    "from": echo.get("from", ""),
+                    "to": str(recipient or ""),
                     "type": echo_type,
-                    "text": text,
+                    "text": str(text or ""),
                     "id": echo.get("id", ""),
                     "timestamp": echo.get("timestamp", ""),
                 })
     return out
-
 
 async def download_media(media_id: str) -> tuple:
     """Download a WhatsApp media object (e.g. an image) by its media_id.
