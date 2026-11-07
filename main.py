@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse,JSONResponse,HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from models import ChatRequest
-from ai import get_ai_response,record_staff_reply
+from ai import record_staff_reply
+from chat_runtime import get_ai_response
 from database import get_saved_appointments
 from logger import get_chat_logs,get_chat_logs_for_session
 from availability import get_availability,get_next_available_days
@@ -102,6 +103,11 @@ def _select_flyers(user_message:str,reply:str):
             if any(w in answer for w in words):selected.append(_SERVICE_FLYERS[key])
     return list(dict.fromkeys(selected))
 
+def _whatsapp_session_id(number):
+    """Use the same canonical customer-number key for inbound and echo events."""
+    digits=re.sub(r"\D","",str(number or ""))
+    return "wa_"+digits if digits else ""
+
 def _normalize_language_prompt(reply):
     if "In which language would you like your session?" not in (reply or ""):return reply
     prefix=reply.split("In which language would you like your session?",1)[0]
@@ -192,12 +198,33 @@ async def whatsapp_webhook(request:Request):
     if not verify_webhook_signature(raw,request.headers.get("x-hub-signature-256","")):raise HTTPException(status_code=403,detail="Invalid signature")
     try:payload=await request.json()
     except Exception:return {"status":"ok"}
+    # Process Business App echoes first. This ensures a staff reply in the
+    # same webhook delivery activates takeover before any customer message
+    # in that delivery can reach the AI.
+    for echo in parse_message_echoes(payload):
+        customer=echo.get("to","")
+        sid=_whatsapp_session_id(customer)
+        if not sid:
+            print("[WhatsApp] Ignoring staff echo without a customer recipient")
+            continue
+        contact=sid[3:]
+        db.set_human_mode(sid,True,channel="whatsapp",contact=contact)
+        staff_text=(echo.get("text") or "").strip()
+        if not staff_text:
+            staff_text=f"[staff sent {echo.get('type') or 'message'}]"
+        record_staff_reply(sid,staff_text)
+        print(f"[WhatsApp] Human takeover enabled for {contact} after staff echo")
+
     for msg in parse_incoming_messages(payload):
         sender=msg.get("from","");text=msg.get("text","")
-        if sender and text:
-            sid="wa_"+sender;resolved=_resolve_numbered_service_choice(sid,text)
+        sid=_whatsapp_session_id(sender)
+        if sid and text:
+            resolved=_resolve_numbered_service_choice(sid,text)
             result=await get_ai_response(sid,resolved,"whatsapp")
-            if result.get("reply"):
-                reply=_normalize_language_prompt(result["reply"]);reply=_number_service_menu(sid,reply)
-                await send_whatsapp_message(sender,reply)
+            # Human takeover deliberately returns an empty reply. Never send
+            # a fallback or an empty WhatsApp message while staff owns the chat.
+            if result.get("human_mode") or not result.get("reply"):
+                continue
+            reply=_normalize_language_prompt(result["reply"]);reply=_number_service_menu(sid,reply)
+            await send_whatsapp_message(sender,reply)
     return {"status":"ok"}
