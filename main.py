@@ -145,7 +145,7 @@ async def chat(req:ChatRequest):
         result["session_id"]=req.session_id
         result["reply"]=_normalize_language_prompt(result.get("reply",""))
         result["reply"]=_number_service_menu(req.session_id,result.get("reply",""))
-        if (req.source or "website")=="website":result["flyers"]=_select_flyers(resolved,result.get("reply",""))
+        # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        result["flyers"]=_select_flyers(resolved,result.get("reply",""))
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
 @app.get("/chat/{session_id}/poll",include_in_schema=False)
