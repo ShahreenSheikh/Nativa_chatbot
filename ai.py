@@ -2126,11 +2126,10 @@ async def render_service_browse_list() -> str:
     by_cat: dict = {}
     for s in display_services:
         by_cat.setdefault(s.get("category", "Other"), []).append(s)
-    show_headers = len(by_cat) > 1
-    for cat in by_cat:
-        if show_headers:
-            lines.append(f"{cat}:")
-        for s in by_cat[cat]:
+    # Service categories in the source sheet often repeat the exact
+    # service name. Do not print those as headings as well as list items.
+    for services_in_category in by_cat.values():
+        for s in services_in_category:
             lines.append(f"- **{s['service_name']}**")
             desc = (s.get("short_desc") or s.get("description") or "").strip()
             if desc:
