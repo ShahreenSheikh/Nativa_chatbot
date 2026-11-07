@@ -33,7 +33,7 @@ _WIDGET_PATH=Path(__file__).parent/"widget.js"
 _SERVICE_FLYERS={"postnatal":"/assets/flyer1.jpg","antenatal":"/assets/flyer2.jpg","nanny":"/assets/flyer3.jpg","breastfeeding":"/assets/flyer4.jpg"}
 _SERVICE_PRICE_PDFS={"antenatal":"/assets/NativaCare_Antenatal_Education.pdf","postnatal":"/assets/NativaCare_Postnatal_Recovery.pdf","breastfeeding":"/assets/NativaCare_Breastfeeding_Support.pdf","nanny":"/assets/NativaCare_Nanny_Training.pdf"}
 # Send each service information flyer followed by its matching pricing/details PDF.
-_ALL_FLYERS=[path for key in ("postnatal","antenatal","nanny","breastfeeding") for path in (_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key])]
+_ALL_FLYERS=[_SERVICE_FLYERS[key] for key in ("postnatal","antenatal","nanny","breastfeeding")]]
 
 # Last numbered service menu shown per conversation. This lets patients say
 # "4", "option 4", "4th one", "fourth one", etc. and reliably refer to
@@ -91,18 +91,35 @@ def _number_service_menu(session_id:str,reply:str):
     return text
 
 def _select_flyers(user_message:str,reply:str):
-    user=(user_message or "").lower();answer=(reply or "").lower()
-    booking_markers=("in which language would you like","available days","reply with a date","available times","reply with a time","what is your name","phone number","email address","booking summary","confirm your booking","payment","bank transfer")
-    if any(x in answer for x in booking_markers):return []
-    broad=("all services","all your services","what services","which services","services do you offer","services you offer","other services","what other services","show me all","everything you offer")
-    if any(p in user for p in broad):return _ALL_FLYERS
-    groups={"breastfeeding":("breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"),"antenatal":("antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"),"postnatal":("postnatal","postpartum","after birth","recovery support","new mother recovery"),"nanny":("nanny","caregiver training","care giver training","newborn training")}
+    """Choose service material for every service-related reply.
+
+    Broad service-list requests receive the four information flyers only.
+    A specific service mention receives its information flyer followed by
+    that service's pricing/details PDF. Match both the customer's message
+    and the generated reply so a service mentioned by the bot is not missed.
+    """
+    user=(user_message or "").lower()
+    answer=(reply or "").lower()
+    broad=("all services","all your services","what services","which services",
+           "services do you offer","services you offer","other services",
+           "what other services","show me all","everything you offer")
+    if any(p in user for p in broad):
+        return list(_ALL_FLYERS)
+
+    groups={
+        "breastfeeding":("breastfeeding","breastfeed","latch","latching","lactation",
+                         "colostrum","milk supply","nursing"),
+        "antenatal":("antenatal","prenatal","pregnancy preparation",
+                     "birth preparation","childbirth education"),
+        "postnatal":("postnatal","postpartum","after birth","recovery support",
+                     "new mother recovery"),
+        "nanny":("nanny","caregiver training","care giver training",
+                 "newborn training"),
+    }
     selected=[]
     for key,words in groups.items():
-        if any(w in user for w in words):selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
-    if not selected and any(x in answer for x in ("has a few options","which would you like","service options")):
-        for key,words in groups.items():
-            if any(w in answer for w in words):selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
+        if any(w in user or w in answer for w in words):
+            selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
     return list(dict.fromkeys(selected))
 
 def _normalize_language_prompt(reply):
@@ -216,7 +233,7 @@ _PUBLIC_BASE = (os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") o
 _GREETING_WORDS = {"hi", "hii", "hey", "hiya", "hello", "salam", "assalamualaikum",
                    "assalamu alaikum", "good morning", "good afternoon", "good evening"}
 _GREETING_FLYER_TTL = 24 * 3600   # flyers 1-4 are sent once per customer per day with the greeting
-_SERVICE_FLYER_TTL = 30 * 60      # a service flyer is not repeated for 30 minutes
+_SERVICE_FLYER_TTL = 0             # attach service material on every relevant service mention
 _SEEN_MSG_IDS: dict = {}          # webhook message id -> time (duplicate guard)
 _BOT_MSG_IDS: dict = {}           # ids of messages the BOT sent (never treated as staff)
 _FLYERS_SENT: dict = {}           # session id -> {flyer path: time sent}
