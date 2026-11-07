@@ -119,12 +119,13 @@
    const data=await response.json();lastResponse=data;
    $("rawResponse").textContent=JSON.stringify(data,null,2);
    if(!response.ok)throw new Error(data.detail||("HTTP "+response.status));
-   const bubble=addMessage(data.reply||"(No bot reply returned)","bot","NativaCare · API source=whatsapp");
-   if(expectedFlyers.length)showFlyers(bubble,expectedFlyers);
-   else if(Array.isArray(data.flyers)&&data.flyers.length){
-    const derived=data.flyers.map(url=>flyerMap.find(x=>url.endsWith(x.file))).filter(Boolean);
-    showFlyers(bubble,derived);
+   const flyersToShow=expectedFlyers.length?expectedFlyers:(Array.isArray(data.flyers)?data.flyers.map(url=>flyerMap.find(x=>url.endsWith(x.file))).filter(Boolean):[]);
+   if(!greeting(message)&&flyersToShow.length){
+    const flyerBubble=addMessage("Here is the information flyer for the service you asked about.","bot","NativaCare · simulated image delivery");
+    showFlyers(flyerBubble,flyersToShow);
    }
+   const bubble=addMessage(data.reply||"(No bot reply returned)","bot","NativaCare · API source=whatsapp");
+   if(greeting(message)&&flyersToShow.length)showFlyers(bubble,flyersToShow);
    if(data.human_mode)addMessage("Backend reports human_mode=true. No automated response should be sent.","staff","API status");
   }catch(e){
    $("rawResponse").textContent=String(e);addMessage("The backend request failed: "+String(e),"bot","API error");
