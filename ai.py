@@ -2084,13 +2084,16 @@ def is_uae_phone(candidate_phone: str) -> bool:
 
 
 def is_category_parent(service: dict) -> bool:
-    """A category-only row: has a service_name and description but NO
-    price — meaning it's not a real bookable appointment, just the
-    header for a group of real bookable children (which share its name
-    via their own family_name field). Never appears in bookable_services()
-    output since it (deliberately) has no midwife_services link either."""
+    """Identify a category/header row, not merely a service with no price.
+
+    Real service variants can have blank default prices when pricing is
+    handled separately. Category rows have no family_name or variant_label;
+    bookable child rows such as S004a have both and must remain available.
+    """
     price = str(service.get("default_price_aed") or "").strip()
-    return bool(service.get("service_name")) and not price
+    family = str(service.get("family_name") or "").strip()
+    variant = str(service.get("variant_label") or "").strip()
+    return bool(service.get("service_name")) and not price and not family and not variant
 
 
 
