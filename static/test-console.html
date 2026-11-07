@@ -57,10 +57,10 @@
  const $=id=>document.getElementById(id);
  let sessionId="",simulatedTakeover=false,lastResponse=null;
  const flyerMap=[
-  {key:"postnatal",file:"flyer1.jpg",label:"Postnatal recovery"},
-  {key:"antenatal",file:"flyer2.jpg",label:"Antenatal preparation"},
-  {key:"nanny",file:"flyer3.jpg",label:"Newborn & nanny training"},
-  {key:"breastfeeding",file:"flyer4.jpg",label:"Breastfeeding support"}
+  {key:"postnatal",file:"flyer1.jpg",pdf:"NativaCare_Postnatal_Recovery.pdf",label:"Postnatal recovery"},
+  {key:"antenatal",file:"flyer2.jpg",pdf:"NativaCare_Antenatal_Education.pdf",label:"Antenatal preparation"},
+  {key:"nanny",file:"flyer3.jpg",pdf:"NativaCare_Nanny_Training.pdf",label:"Newborn & nanny training"},
+  {key:"breastfeeding",file:"flyer4.jpg",pdf:"NativaCare_Breastfeeding_Support.pdf",label:"Breastfeeding support"}
  ];
  function newId(){return "wa_test_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7)}
  function setSession(){sessionId=newId();$("sessionId").value=sessionId}
@@ -77,8 +77,9 @@
    const card=document.createElement("div");card.className="flyer";
    const img=document.createElement("img");img.src="/assets/"+item.file;img.alt=item.label;img.loading="lazy";
    img.onerror=()=>{img.alt="Could not load "+item.file;img.style.minHeight="90px"};
-   const label=document.createElement("span");label.textContent=item.label;
-   card.append(img,label);grid.appendChild(card);
+   const label=document.createElement("span");label.textContent=item.label+" · information flyer";
+   const pdf=document.createElement("a");pdf.href="/assets/"+item.pdf;pdf.target="_blank";pdf.rel="noopener";pdf.textContent="Open pricing & service PDF";pdf.style.cssText="display:block;padding:8px 9px;color:#ffb2c3;font-size:11px;text-decoration:underline;border-top:1px solid #3b3f4c";
+   card.append(img,label,pdf);grid.appendChild(card);
   });
   parent.appendChild(grid);$("messages").scrollTop=$("messages").scrollHeight;
  }
