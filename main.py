@@ -348,15 +348,23 @@ async def _handle_customer_message(msg: dict):
         reply = _normalize_language_prompt(reply)
         reply = _number_service_menu(sid, reply)
         greeting = _is_greeting(text)
-        # Greeting: hello first, then flyers 1-4 (once a day).
-        after_urls = _flyer_urls(sid, _ALL_FLYERS, _GREETING_FLYER_TTL) if greeting else []
-        # Service question: the matching flyer(s) first, then the explanation.
-        before_urls = [] if greeting else _flyer_urls(sid, _select_flyers(resolved, reply), _SERVICE_FLYER_TTL)
+        # Flyers are informational attachments, not part of booking. Only
+        # send them while the customer is browsing (before a booking flow
+        # starts). The previous message-only matcher also matched service
+        # names inside booking prompts/replies, so it attached PDFs during
+        # service confirmation, variant selection, slot picking and details.
+        # Greetings should stay lightweight too — do not dump all four flyers.
+        state_after = result.get("state", "")
+        can_send_service_material = (
+            not greeting and state_after in ("browsing", "booked")
+        )
+        before_urls = (
+            _flyer_urls(sid, _select_flyers(resolved, reply), _SERVICE_FLYER_TTL)
+            if can_send_service_material else []
+        )
         if before_urls:
             await _send_flyers(sender, before_urls)
         _remember_bot_message(await send_whatsapp_message(sender, reply))
-        if after_urls:
-            await _send_flyers(sender, after_urls)
 
 
 async def _process_whatsapp_payload(payload: dict):
