@@ -13,7 +13,7 @@ from ai import get_ai_response,record_staff_reply
 from database import get_saved_appointments
 from logger import get_chat_logs,get_chat_logs_for_session
 from availability import get_availability,get_next_available_days
-from whatsapp_service import send_whatsapp_message,verify_webhook_signature,parse_incoming_messages,parse_message_echoes,download_media,WHATSAPP_VERIFY_TOKEN,send_whatsapp_image
+from whatsapp_service import send_whatsapp_message,send_whatsapp_document,verify_webhook_signature,parse_incoming_messages,parse_message_echoes,download_media,WHATSAPP_VERIFY_TOKEN,send_whatsapp_image
 import db; db.init_db()
 import payments,invoice_pdf
 CLINIC_NAME=os.getenv("CLINIC_NAME","NativaCare");ADMIN_API_KEY=os.getenv("ADMIN_API_KEY","").strip()
@@ -30,7 +30,10 @@ app.mount("/uploads",StaticFiles(directory=str(UPLOADS_DIR)),name="uploads")
 _DASHBOARD_DIR=Path(__file__).parent/"dashboard"
 if _DASHBOARD_DIR.exists():app.mount("/dashboard",StaticFiles(directory=str(_DASHBOARD_DIR),html=True),name="dashboard")
 _WIDGET_PATH=Path(__file__).parent/"widget.js"
-_SERVICE_FLYERS={"postnatal":"/assets/flyer1.jpg","antenatal":"/assets/flyer2.jpg","nanny":"/assets/flyer3.jpg","breastfeeding":"/assets/flyer4.jpg"};_ALL_FLYERS=list(_SERVICE_FLYERS.values())
+_SERVICE_FLYERS={"postnatal":"/assets/flyer1.jpg","antenatal":"/assets/flyer2.jpg","nanny":"/assets/flyer3.jpg","breastfeeding":"/assets/flyer4.jpg"}
+_SERVICE_PRICE_PDFS={"antenatal":"/assets/NativaCare_Antenatal_Education.pdf","postnatal":"/assets/NativaCare_Postnatal_Recovery.pdf","breastfeeding":"/assets/NativaCare_Breastfeeding_Support.pdf","nanny":"/assets/NativaCare_Nanny_Training.pdf"}
+# Send each service information flyer followed by its matching pricing/details PDF.
+_ALL_FLYERS=[path for key in ("postnatal","antenatal","nanny","breastfeeding") for path in (_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key])]
 
 # Last numbered service menu shown per conversation. This lets patients say
 # "4", "option 4", "4th one", "fourth one", etc. and reliably refer to
@@ -96,10 +99,10 @@ def _select_flyers(user_message:str,reply:str):
     groups={"breastfeeding":("breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"),"antenatal":("antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"),"postnatal":("postnatal","postpartum","after birth","recovery support","new mother recovery"),"nanny":("nanny","caregiver training","care giver training","newborn training")}
     selected=[]
     for key,words in groups.items():
-        if any(w in user for w in words):selected.append(_SERVICE_FLYERS[key])
+        if any(w in user for w in words):selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
     if not selected and any(x in answer for x in ("has a few options","which would you like","service options")):
         for key,words in groups.items():
-            if any(w in answer for w in words):selected.append(_SERVICE_FLYERS[key])
+            if any(w in answer for w in words):selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
     return list(dict.fromkeys(selected))
 
 def _normalize_language_prompt(reply):
@@ -264,9 +267,13 @@ def _flyer_urls(session_id: str, paths: list, ttl: float) -> list:
 
 async def _send_flyers(to: str, urls: list):
     for u in urls:
-        r = await send_whatsapp_image(to, u)
+        if u.lower().endswith(".pdf"):
+            filename = Path(u.split("?", 1)[0]).name
+            r = await send_whatsapp_document(to, u, filename=filename, caption="Service information and pricing")
+        else:
+            r = await send_whatsapp_image(to, u)
         if r.get("status") != "sent":
-            print(f"[WhatsApp] Flyer not sent ({r.get('status')}); carrying on")
+            print(f"[WhatsApp] Service material not sent ({r.get('status')}); carrying on")
 
 
 def _remember_bot_message(sent: dict):
