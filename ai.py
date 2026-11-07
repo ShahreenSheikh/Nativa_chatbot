@@ -3437,7 +3437,7 @@ async def get_ai_response(session_id: str, user_message: str,
 
     # Fixed clinic-policy answers. Keep these deterministic so the LLM
     # cannot invent insurance coverage, reimbursement, or prices.
-    if re.search(r"\\b(insurance|insured|insurer|coverage|covered|reimburse(?:ment)?|claim|direct billing)\\b", user_message or "", re.IGNORECASE):
+    if re.search(r"\b(insurance|insured|insurer|coverage|covered|reimburse(?:ment)?|claim|direct billing)\b", user_message or "", re.IGNORECASE):
         _debug_event("Insurance policy question — deterministic reply")
         reply = (
             "NativaCare services are not covered by any insurance. "
@@ -3447,7 +3447,7 @@ async def get_ai_response(session_id: str, user_message: str,
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
 
-    if re.search(r"\\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\\b", user_message or "", re.IGNORECASE):
+    if re.search(r"\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\b", user_message or "", re.IGNORECASE):
         msg = (user_message or "").lower()
         if "complete journey" in msg:
             reply = "The Complete Journey package is AED 6,800. For more information, please call +971 56 473 0502 or email info@nativacare.com."
