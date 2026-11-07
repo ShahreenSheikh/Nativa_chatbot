@@ -9,12 +9,11 @@ from fastapi.responses import FileResponse,JSONResponse,HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from models import ChatRequest
-from ai import record_staff_reply
-from chat_runtime import get_ai_response
+from ai import get_ai_response,record_staff_reply
 from database import get_saved_appointments
 from logger import get_chat_logs,get_chat_logs_for_session
 from availability import get_availability,get_next_available_days
-from whatsapp_service import send_whatsapp_message,verify_webhook_signature,parse_incoming_messages,parse_message_echoes,download_media,WHATSAPP_VERIFY_TOKEN
+from whatsapp_service import send_whatsapp_message,verify_webhook_signature,parse_incoming_messages,parse_message_echoes,download_media,WHATSAPP_VERIFY_TOKEN,send_whatsapp_image
 import db; db.init_db()
 import payments,invoice_pdf
 CLINIC_NAME=os.getenv("CLINIC_NAME","NativaCare");ADMIN_API_KEY=os.getenv("ADMIN_API_KEY","").strip()
@@ -103,11 +102,6 @@ def _select_flyers(user_message:str,reply:str):
             if any(w in answer for w in words):selected.append(_SERVICE_FLYERS[key])
     return list(dict.fromkeys(selected))
 
-def _whatsapp_session_id(number):
-    """Use the same canonical customer-number key for inbound and echo events."""
-    digits=re.sub(r"\D","",str(number or ""))
-    return "wa_"+digits if digits else ""
-
 def _normalize_language_prompt(reply):
     if "In which language would you like your session?" not in (reply or ""):return reply
     prefix=reply.split("In which language would you like your session?",1)[0]
@@ -192,39 +186,200 @@ def verify_whatsapp_webhook(request:Request):
     q=request.query_params
     if q.get("hub.mode")=="subscribe" and q.get("hub.verify_token")==WHATSAPP_VERIFY_TOKEN:return Response(content=q.get("hub.challenge","") ,media_type="text/plain")
     raise HTTPException(status_code=403,detail="Verification failed")
-@app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request:Request):
-    raw=await request.body()
-    if not verify_webhook_signature(raw,request.headers.get("x-hub-signature-256","")):raise HTTPException(status_code=403,detail="Invalid signature")
-    try:payload=await request.json()
-    except Exception:return {"status":"ok"}
-    # Process Business App echoes first. This ensures a staff reply in the
-    # same webhook delivery activates takeover before any customer message
-    # in that delivery can reach the AI.
-    for echo in parse_message_echoes(payload):
-        customer=echo.get("to","")
-        sid=_whatsapp_session_id(customer)
-        if not sid:
-            print("[WhatsApp] Ignoring staff echo without a customer recipient")
-            continue
-        contact=sid[3:]
-        db.set_human_mode(sid,True,channel="whatsapp",contact=contact)
-        staff_text=(echo.get("text") or "").strip()
-        if not staff_text:
-            staff_text=f"[staff sent {echo.get('type') or 'message'}]"
-        record_staff_reply(sid,staff_text)
-        print(f"[WhatsApp] Human takeover enabled for {contact} after staff echo")
+import asyncio
+import time
 
-    for msg in parse_incoming_messages(payload):
-        sender=msg.get("from","");text=msg.get("text","")
-        sid=_whatsapp_session_id(sender)
-        if sid and text:
-            resolved=_resolve_numbered_service_choice(sid,text)
-            result=await get_ai_response(sid,resolved,"whatsapp")
-            # Human takeover deliberately returns an empty reply. Never send
-            # a fallback or an empty WhatsApp message while staff owns the chat.
-            if result.get("human_mode") or not result.get("reply"):
-                continue
-            reply=_normalize_language_prompt(result["reply"]);reply=_number_service_menu(sid,reply)
-            await send_whatsapp_message(sender,reply)
-    return {"status":"ok"}
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request):
+    raw = await request.body()
+    if not verify_webhook_signature(raw, request.headers.get("x-hub-signature-256", "")):
+        raise HTTPException(status_code=403, detail="Invalid signature")
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "ok"}
+    # Answer Meta straight away; the AI work runs in the background so Meta does not
+    # time out and re-send the same message (which would cause double replies).
+    task = asyncio.create_task(_process_whatsapp_payload(payload))
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp helpers (used only by the webhook above)
+# ---------------------------------------------------------------------------
+_PUBLIC_BASE = (os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") or "").rstrip("/")
+_GREETING_WORDS = {"hi", "hii", "hey", "hiya", "hello", "salam", "assalamualaikum",
+                   "assalamu alaikum", "good morning", "good afternoon", "good evening"}
+_GREETING_FLYER_TTL = 24 * 3600   # flyers 1-4 are sent once per customer per day with the greeting
+_SERVICE_FLYER_TTL = 30 * 60      # a service flyer is not repeated for 30 minutes
+_SEEN_MSG_IDS: dict = {}          # webhook message id -> time (duplicate guard)
+_BOT_MSG_IDS: dict = {}           # ids of messages the BOT sent (never treated as staff)
+_FLYERS_SENT: dict = {}           # session id -> {flyer path: time sent}
+_SESSION_LOCKS: dict = {}         # one lock per customer so their messages stay in order
+_BG_TASKS: set = set()
+if not _PUBLIC_BASE:
+    print("[WhatsApp] WARNING: PUBLIC_BASE_URL / FRONTEND_BASE_URL is not set - flyers cannot be sent on WhatsApp.")
+
+
+def _prune(d: dict, ttl: float):
+    now = time.time()
+    for k in [k for k, t in d.items() if now - t > ttl]:
+        d.pop(k, None)
+
+
+def _seen_before(message_id: str) -> bool:
+    if not message_id:
+        return False
+    _prune(_SEEN_MSG_IDS, 6 * 3600)
+    if message_id in _SEEN_MSG_IDS:
+        return True
+    _SEEN_MSG_IDS[message_id] = time.time()
+    return False
+
+
+def _mask(number: str) -> str:
+    return "***" + number[-4:] if number else ""
+
+
+def _is_greeting(text: str) -> bool:
+    return re.sub(r"[^a-z ]", "", (text or "").lower()).strip() in _GREETING_WORDS
+
+
+def _flyer_urls(session_id: str, paths: list, ttl: float) -> list:
+    """Public URLs of the flyers still to be sent to this customer (and marks them as sent)."""
+    if not _PUBLIC_BASE:
+        return []
+    sent = _FLYERS_SENT.setdefault(session_id, {})
+    now = time.time()
+    urls = []
+    for p in paths:
+        if now - sent.get(p, 0) < ttl:
+            continue
+        sent[p] = now
+        urls.append(_PUBLIC_BASE + p)
+    return urls
+
+
+async def _send_flyers(to: str, urls: list):
+    for u in urls:
+        r = await send_whatsapp_image(to, u)
+        if r.get("status") != "sent":
+            print(f"[WhatsApp] Flyer not sent ({r.get('status')}); carrying on")
+
+
+def _remember_bot_message(sent: dict):
+    try:
+        mid = ((sent.get("response") or {}).get("messages") or [{}])[0].get("id")
+        if mid:
+            _prune(_BOT_MSG_IDS, 6 * 3600)
+            _BOT_MSG_IDS[mid] = time.time()
+    except Exception:
+        pass
+
+
+async def _handle_staff_echoes(payload: dict):
+    """A person replied from the WhatsApp Business app: the bot stops for that chat."""
+    for echo in parse_message_echoes(payload):
+        customer = echo.get("to", "")
+        echo_id = echo.get("id", "")
+        if not customer or echo_id in _BOT_MSG_IDS or _seen_before(echo_id):
+            continue
+        sid = "wa_" + customer
+        try:
+            from logger import save_chat_log as _save_chat_log
+            staff_text = echo.get("text") or f"[{echo.get('type', 'message')}]"
+            _save_chat_log(sid, "[staff]", staff_text)
+            from chat_runtime import record_conversation_turn
+            record_conversation_turn(sid, "assistant", "[Staff] " + staff_text)
+        except Exception as e:
+            print(f"[Takeover] could not log staff message: {e}")
+        try:
+            try:
+                db.set_human_mode(sid, True, channel="whatsapp", contact=customer)
+            except TypeError:
+                db.set_human_mode(sid, True)
+            print(f"[Takeover] staff replied to {_mask(customer)}: bot stopped for this chat")
+        except Exception as e:
+            print(f"[Takeover] ERROR - could not stop the bot for {_mask(customer)}: {e}")
+
+
+async def _handle_customer_message(msg: dict):
+    sender = msg.get("from", "")
+    text = msg.get("text", "")
+    if not (sender and text):
+        return
+    if _seen_before(msg.get("id", "")):
+        print(f"[WhatsApp] Duplicate delivery ignored ({_mask(sender)})")
+        return
+    sid = "wa_" + sender
+    lock = _SESSION_LOCKS.setdefault(sid, asyncio.Lock())
+    async with lock:
+        resolved = _resolve_numbered_service_choice(sid, text)
+        result = await get_ai_response(sid, resolved, "whatsapp")
+        reply = result.get("reply")
+        if not reply:
+            return  # staff are handling this chat (or nothing to say)
+        reply = _normalize_language_prompt(reply)
+        reply = _number_service_menu(sid, reply)
+        greeting = _is_greeting(text)
+        # Greeting: hello first, then flyers 1-4 (once a day).
+        after_urls = _flyer_urls(sid, _ALL_FLYERS, _GREETING_FLYER_TTL) if greeting else []
+        # Service question: the matching flyer(s) first, then the explanation.
+        before_urls = [] if greeting else _flyer_urls(sid, _select_flyers(resolved, reply), _SERVICE_FLYER_TTL)
+        if before_urls:
+            await _send_flyers(sender, before_urls)
+        _remember_bot_message(await send_whatsapp_message(sender, reply))
+        if after_urls:
+            await _send_flyers(sender, after_urls)
+
+
+async def _process_whatsapp_payload(payload: dict):
+    try:
+        await _handle_staff_echoes(payload)
+    except Exception as e:
+        print(f"[WhatsApp] echo handling error: {e}")
+    try:
+        messages = parse_incoming_messages(payload)
+    except Exception as e:
+        print(f"[WhatsApp] could not read payload: {e}")
+        return
+    for msg in messages:
+        try:
+            await _handle_customer_message(msg)
+        except Exception as e:
+            print(f"[WhatsApp] error handling one message: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Hand a chat back to the bot (until the dashboard has a button for it).
+# Open https://YOUR-APP/docs -> POST /admin/whatsapp/handback -> "Try it out".
+# ---------------------------------------------------------------------------
+class HandbackBody(BaseModel):
+    phone: str = ""      # the customer's WhatsApp number, digits only, e.g. 971501234567
+    service: str = ""    # optional: nanny_training / breastfeeding_support / postnatal_support / antenatal_preparation
+    note: str = ""       # optional context for the bot, e.g. "agreed postnatal visit, home, Sunday afternoon"
+    message: str = ""    # optional text to send the customer now (otherwise a short default follow-up)
+    send: bool = True
+
+
+@app.post("/admin/whatsapp/handback")
+async def whatsapp_handback(body: HandbackBody, x_admin_key: str = Header(default="")):
+    import hmac
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=503, detail="Set ADMIN_API_KEY in Railway first.")
+    if not hmac.compare_digest(x_admin_key or "", ADMIN_API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-Admin-Key header")
+    digits = re.sub(r"\D", "", body.phone)
+    if len(digits) < 8:
+        raise HTTPException(status_code=400, detail="phone must be the customer's WhatsApp number")
+    from chat_runtime import handback_session
+    text = await handback_session("wa_" + digits, body.service or None, body.note, body.message)
+    status = "not_sent"
+    if body.send:
+        sent = await send_whatsapp_message(digits, text)
+        _remember_bot_message(sent)
+        status = sent.get("status", "failed")
+    print(f"[Handback] bot turned back on for {_mask(digits)} (message {status})")
+    return {"session_id": "wa_" + digits, "bot": "on", "message_sent": status, "message": text}
