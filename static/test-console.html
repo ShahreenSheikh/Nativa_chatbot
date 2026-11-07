@@ -78,8 +78,14 @@
    const img=document.createElement("img");img.src="/assets/"+item.file;img.alt=item.label;img.loading="lazy";
    img.onerror=()=>{img.alt="Could not load "+item.file;img.style.minHeight="90px"};
    const label=document.createElement("span");label.textContent=item.label+" · information flyer";
-   const pdf=document.createElement("a");pdf.href="/assets/"+item.pdf;pdf.target="_blank";pdf.rel="noopener";pdf.textContent="Open pricing & service PDF";pdf.style.cssText="display:block;padding:8px 9px;color:#ffb2c3;font-size:11px;text-decoration:underline;border-top:1px solid #3b3f4c";
-   card.append(img,label,pdf);grid.appendChild(card);
+   card.append(img,label);
+   if(item.includePricing){
+    const pdfTitle=document.createElement("span");pdfTitle.textContent="Pricing & service details";pdfTitle.style.cssText="font-weight:700;color:#ffb2c3;border-top:1px solid #3b3f4c";
+    const pdf=document.createElement("iframe");pdf.src="/assets/"+item.pdf+"#toolbar=0&navpanes=0";pdf.title=item.label+" pricing and service details";pdf.loading="lazy";pdf.style.cssText="display:block;width:100%;height:280px;border:0;background:#fff";
+    const open=document.createElement("a");open.href="/assets/"+item.pdf;open.target="_blank";open.rel="noopener";open.textContent="Open PDF in new tab";open.style.cssText="display:block;padding:8px 9px;color:#ffb2c3;font-size:11px;text-decoration:underline;border-top:1px solid #3b3f4c";
+    card.append(pdfTitle,pdf,open);
+   }
+   grid.appendChild(card);
   });
   parent.appendChild(grid);$("messages").scrollTop=$("messages").scrollHeight;
  }
@@ -92,7 +98,7 @@
    ["postnatal",["postnatal","postpartum","after birth","recovery support","new mother recovery"]],
    ["nanny",["nanny","caregiver training","care giver training","newborn training"]]
   ];
-  groups.forEach(([key,words])=>{if(words.some(w=>t.includes(w)))out.push(flyerMap.find(x=>x.key===key))});
+  groups.forEach(([key,words])=>{if(words.some(w=>t.includes(w)))out.push({...flyerMap.find(x=>x.key===key),includePricing:true})});
   return out;
  }
  function syncControls(){
@@ -122,7 +128,7 @@
    if(!response.ok)throw new Error(data.detail||("HTTP "+response.status));
    const flyersToShow=expectedFlyers.length?expectedFlyers:(Array.isArray(data.flyers)?data.flyers.map(url=>flyerMap.find(x=>url.endsWith(x.file))).filter(Boolean):[]);
    if(!greeting(message)&&flyersToShow.length){
-    const flyerBubble=addMessage("Here is the information flyer for the service you asked about.","bot","NativaCare · simulated image delivery");
+    const flyerBubble=addMessage("Here is the information flyer and pricing details for the service you asked about.","bot","NativaCare · simulated image and document delivery");
     showFlyers(flyerBubble,flyersToShow);
    }
    const bubble=addMessage(data.reply||"(No bot reply returned)","bot","NativaCare · API source=whatsapp");
