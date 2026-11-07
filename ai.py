@@ -1903,17 +1903,22 @@ async def render_variant_choice(family_name: str, variants: list) -> str:
     return "\n".join(lines)
 
 
-async def bookable_services() -> list:
-    """Return only services that have at least one active midwife mapped to
-    them in `midwife_services`. Prevents the bot from advertising services
-    nobody can actually book.
+def is_excluded_nanny_full_day(service: dict) -> bool:
+    """NativaCare offers Nanny Training, but not the Full Day option."""
+    family = str(service.get("family_name") or "").strip().lower()
+    name = str(service.get("service_name") or "").strip().lower()
+    variant = str(service.get("variant_label") or "").strip().lower()
+    is_nanny_training = (
+        ("nanny" in family and "training" in family)
+        or ("nanny" in name and "training" in name)
+    )
+    is_full_day = "full day" in variant or "full day" in name
+    return is_nanny_training and is_full_day
 
-    Also explicitly excludes category-parent rows (see is_category_parent)
-    even if one accidentally got a midwife_services link — a parent row
-    has no price and isn't a real appointment, so it should never be
-    directly bookable regardless of what's in that link table. This is a
-    defense-in-depth check, not the primary mechanism (the primary one is
-    simply never linking a parent row's ID in midwife_services at all)."""
+
+async def bookable_services() -> list:
+    """Return active-midwife services, excluding category-parent rows and
+    the specifically unavailable Nanny Training Full Day option."""
     services, links, midwives = await _gather(
         get_services, get_midwife_services, get_midwives,
     )
@@ -1922,8 +1927,12 @@ async def bookable_services() -> list:
         link["service_id"] for link in links
         if link.get("midwife_id") in active_midwife_ids
     }
-    return [s for s in services
-            if s["service_id"] in bookable_service_ids and not is_category_parent(s)]
+    return [
+        s for s in services
+        if s["service_id"] in bookable_service_ids
+        and not is_category_parent(s)
+        and not is_excluded_nanny_full_day(s)
+    ]
 
 
 async def group_services_by_family(services: list) -> list:
@@ -2089,7 +2098,11 @@ def resolve_family_variants(services: list, family_name: str) -> list:
     """The reverse of the grouping above — given a family name, return
     every service row that belongs to it (for showing the actual tier
     choices once a family has been picked)."""
-    return [s for s in services if (s.get("family_name") or "") == family_name]
+    return [
+        s for s in services
+        if (s.get("family_name") or "") == family_name
+        and not is_excluded_nanny_full_day(s)
+    ]
 
 
 _ORDINAL_WORDS = {
