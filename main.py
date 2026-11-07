@@ -33,7 +33,7 @@ _WIDGET_PATH=Path(__file__).parent/"widget.js"
 _SERVICE_FLYERS={"postnatal":"/assets/flyer1.jpg","antenatal":"/assets/flyer2.jpg","nanny":"/assets/flyer3.jpg","breastfeeding":"/assets/flyer4.jpg"}
 _SERVICE_PRICE_PDFS={"antenatal":"/assets/NativaCare_Antenatal_Education.pdf","postnatal":"/assets/NativaCare_Postnatal_Recovery.pdf","breastfeeding":"/assets/NativaCare_Breastfeeding_Support.pdf","nanny":"/assets/NativaCare_Nanny_Training.pdf"}
 # Send each service information flyer followed by its matching pricing/details PDF.
-_ALL_FLYERS=[_SERVICE_FLYERS[key] for key in ("postnatal","antenatal","nanny","breastfeeding")]]
+_ALL_FLYERS=[_SERVICE_FLYERS[key] for key in ("postnatal","antenatal","nanny","breastfeeding")]
 
 # Last numbered service menu shown per conversation. This lets patients say
 # "4", "option 4", "4th one", "fourth one", etc. and reliably refer to
