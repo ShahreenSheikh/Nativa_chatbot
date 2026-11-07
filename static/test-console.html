@@ -92,14 +92,24 @@
  function greeting(s){return /^(hi|hey|hiya|hello|salam|assalamualaikum|assalamu alaikum|good morning|good afternoon|good evening)[!., ]*$/i.test((s||"").trim())}
  function selectedFlyers(s){
   const t=(s||"").toLowerCase(),out=[];
+  const broad=["all services","all your services","what services","which services","services do you offer","services you offer","show me all","everything you offer"];
+  if(broad.some(w=>t.includes(w)))return flyerMap.map(x=>({...x,includePricing:false}));
   const groups=[
-   ["breastfeeding",["breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"]],
+   ["breastfeeding",["breastfeeding","breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"]],
    ["antenatal",["antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"]],
    ["postnatal",["postnatal","postpartum","after birth","recovery support","new mother recovery"]],
    ["nanny",["nanny","caregiver training","care giver training","newborn training"]]
   ];
   groups.forEach(([key,words])=>{if(words.some(w=>t.includes(w)))out.push({...flyerMap.find(x=>x.key===key),includePricing:true})});
   return out;
+ }
+ function flyersFromApi(paths){
+  if(!Array.isArray(paths)||!paths.length)return [];
+  return flyerMap.map(item=>{
+   const hasFlyer=paths.some(p=>String(p).endsWith(item.file));
+   const hasPricing=paths.some(p=>String(p).endsWith(item.pdf));
+   return hasFlyer||hasPricing?{...item,includePricing:hasPricing}:null;
+  }).filter(Boolean);
  }
  function syncControls(){
   $("takeoverBanner").classList.toggle("hidden",!simulatedTakeover);
@@ -126,9 +136,9 @@
    const data=await response.json();lastResponse=data;
    $("rawResponse").textContent=JSON.stringify(data,null,2);
    if(!response.ok)throw new Error(data.detail||("HTTP "+response.status));
-   const flyersToShow=expectedFlyers.length?expectedFlyers:(Array.isArray(data.flyers)?data.flyers.map(url=>flyerMap.find(x=>url.endsWith(x.file))).filter(Boolean):[]);
+   const flyersToShow=greeting(message)?flyerMap.map(x=>({...x,includePricing:false})):(flyersFromApi(data.flyers).length?flyersFromApi(data.flyers):selectedFlyers(message+" "+(data.reply||"")));
    if(!greeting(message)&&flyersToShow.length){
-    const flyerBubble=addMessage("Here is the information flyer and pricing details for the service you asked about.","bot","NativaCare · simulated image and document delivery");
+    const flyerBubble=addMessage("Here are the relevant service information and pricing documents.","bot","NativaCare · simulated attachment preview");
     showFlyers(flyerBubble,flyersToShow);
    }
    const bubble=addMessage(data.reply||"(No bot reply returned)","bot","NativaCare · API source=whatsapp");
