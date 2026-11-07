@@ -4,6 +4,8 @@ import ai as _ai
 from service_intents import detect_service_key,is_context_followup,needs_empathy
 try: import persistent_store as _ps
 except Exception: _ps=None
+try: import db as _db
+except Exception: _db=None
 CONTACT_NUMBER="+971 50 7297197"
 SERVICE_LABELS={"nanny_training":"Nanny Training / Newborn Care Training","breastfeeding_support":"Breastfeeding Support","postnatal_support":"Postnatal Recovery Support","antenatal_preparation":"Antenatal Preparation & Education"}
 SERVICE_HELP={
@@ -75,8 +77,45 @@ async def _price_fallback(service_key):
     if unique:return "Current options are: "+"; ".join(f"{n} — AED {p}" for n,p in unique[:6])+"."
     return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at +971 50 7297197 for the current price."
 
+def _human_takeover_active(session_id):
+    """Fail closed if takeover state cannot be checked: do not race staff."""
+    if not session_id or _db is None:
+        return False
+    try:
+        conversation=_db.get_conversation(session_id)
+        return bool(conversation and conversation.get("human_mode"))
+    except Exception as exc:
+        print(f"[Chat runtime] Could not verify human takeover for {session_id}: {exc}")
+        return True
+
 async def get_ai_response(session_id: str,user_message: str,source: str="website"):
-    _restore(session_id);session=_ai._sessions.get(session_id)
+    _restore(session_id)
+
+    # This guard intentionally runs before the core AI (including its
+    # emergency-response shortcut), price fallback, and empathy formatting.
+    # Once staff take over, every customer message is logged for staff but
+    # the bot must not send any automated response.
+    if _human_takeover_active(session_id):
+        session=_ai._sessions.get(session_id)
+        if session:
+            _ai.append_history(session,user_message,"[handled by staff]")
+            _persist(session_id)
+        try:
+            _ai.save_chat_log(session_id,user_message,"[human_mode — awaiting staff reply]")
+        except Exception as exc:
+            print(f"[Chat runtime] Could not log human-owned message for {session_id}: {exc}")
+        return {
+            "reply":"",
+            "language":"en",
+            "lead_captured":False,
+            "booking_made":False,
+            "state":(session or {}).get("state"),
+            "human_mode":True,
+            "flyers":[],
+            "service_context":(session or {}).get("last_discussed_service_key"),
+        }
+
+    session=_ai._sessions.get(session_id)
     normalized=(user_message or "").strip().lower().rstrip("!.,")
     previous=(session or {}).get("last_discussed_service_key")
     service_key=detect_service_key(user_message)
