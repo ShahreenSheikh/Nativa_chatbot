@@ -1021,7 +1021,38 @@ async def _build_understand_prompt(session: Optional[dict] = None) -> str:
             state_block = (f"ACTIVE booking in progress. State: {state}.\n"
                            + "\n".join(f"  - {p}" for p in active_parts))
         else:
-            state_block = f"No active booking. State: {state}."
+            # Browsing conversations can still have a clear service under
+            # discussion even though no booking has been started. Preserve
+            # that referent so short follow-ups such as "how long is it?",
+            # "what does it include?" and "how much?" are resolved against
+            # the service just discussed instead of asking the user to name
+            # it again.
+            recent = session.get("last_recommended") or []
+            if len(recent) == 1:
+                state_block = (
+                    f"State: {state}. No active booking, but the most "
+                    f"recently discussed service is "
+                    f"\"{recent[0].get('service_name', '')}\" "
+                    f"(service id: {recent[0].get('service_id', '')}). "
+                    "If the user's message is a short follow-up or uses "
+                    "a pronoun such as 'it', 'that', or 'this', interpret "
+                    "it as referring to this service unless the message "
+                    "clearly introduces a different subject. Do not ask "
+                    "which service they mean."
+                )
+            elif len(recent) > 1:
+                names = ", ".join(
+                    x.get("service_name", "") for x in recent
+                    if x.get("service_name")
+                )
+                state_block = (
+                    f"State: {state}. Recently discussed services: {names}. "
+                    "Resolve a follow-up from the conversation history. "
+                    "Ask which one only if the history genuinely leaves "
+                    "multiple equally likely referents."
+                )
+            else:
+                state_block = f"No active booking. State: {state}."
 
     return UNDERSTAND_SYSTEM_PROMPT_TMPL.format(
         session_state=state_block,
@@ -1367,6 +1398,12 @@ PHRASING:
 - CRITICAL — PACKAGES: Packages (Pregnancy Foundation, Full Caseload Care, Postnatal Recovery Bundle, Newborn Starter, Mummy and Baby Wellbeing, or anything in the PACKAGES section of the catalog) are NOT bookable through chat. NEVER tell the user to "reply 'book [package name]'" or say a package "is available" to book. When discussing a package, ALWAYS include the phone number: "To book the Newborn Starter, call +971564730502 or email info@nativacare.com." If the user wants a single service instead, suggest one from the bookable services list.
 - When answering a "what services do you offer" style question, after listing the bookable services, add one short closing sentence mentioning that packages (bundles) are also available and that the user can ask about them — don't list the packages themselves unless asked specifically about packages.
 
+CONVERSATIONAL FOLLOW-UPS:
+- Use the recent conversation history and any ACTIVE booking or RECENTLY DISCUSSED SERVICE in CONTEXT to resolve short follow-up questions.
+- If the user asks "how long is it?", "how much is it?", "what does it include?", "is it at home?", or similar, and one service was just discussed, answer about THAT service. Do not ask them to repeat or identify the service.
+- Ask which service only when there is genuinely no clear service referent (for example, several services were just listed and none was selected).
+- If a service family has multiple options with different durations/prices, explain that the options differ and give the available option details; ask which OPTION they mean only if needed.
+
 LENGTH AND FORMAT:
 - For LISTING questions ("what services do you offer", "who are your midwives", "what packages do you have"): list the items. Up to 140 words. Use a brief intro sentence followed by a bulleted list. Don't say "various" or "many" — list them.
 - For OTHER questions: 3 short sentences max, ~70 words.
@@ -1389,11 +1426,14 @@ async def _build_compose_context(intent: str, slots: dict,
         parts.append("(Note: this deployment uses demo data; verify with the clinic.)")
 
     # If a booking is in progress, surface the active service details FIRST.
-    # The LLM was answering "how much would it cost?" with "I don't have
-    # enough information" because the active lead wasn't in the context.
+    # Also preserve a single recently discussed service while browsing:
+    # customers naturally ask short follow-ups ("how long is it?", "what
+    # does it include?") without repeating the service name. Previously
+    # that context was only available in chat history, while this targeted
+    # context omitted it, so the model sometimes asked which service.
     lead = (session or {}).get("lead") or {}
+    services = await get_services()
     if lead.get("service_id"):
-        services = await get_services()
         active = next(
             (s for s in services if s["service_id"] == lead["service_id"]),
             None,
@@ -1410,6 +1450,42 @@ async def _build_compose_context(intent: str, slots: dict,
                 f"- Time: {lead.get('appointment_time', 'not picked yet')}\n"
                 f"- Midwife: {lead.get('midwife_name', 'will be assigned')}"
             )
+    else:
+        recent = (session or {}).get("last_recommended") or []
+        if len(recent) == 1:
+            recent_id = recent[0].get("service_id")
+            recent_service = next(
+                (s for s in services if s.get("service_id") == recent_id),
+                None,
+            )
+            if recent_service:
+                family = recent_service.get("family_name")
+                related = [
+                    s for s in services
+                    if family and s.get("family_name") == family
+                ] or [recent_service]
+                details = []
+                for item in related[:8]:
+                    label = item.get("service_name", "Service")
+                    duration = item.get("duration_minutes")
+                    price = item.get("default_price_aed")
+                    bits = []
+                    if duration not in (None, ""):
+                        bits.append(f"{duration} min")
+                    if price not in (None, ""):
+                        bits.append(f"AED {price}")
+                    details.append(
+                        f"- {label}: {', '.join(bits) if bits else 'details not listed'}"
+                    )
+                parts.append(
+                    "\nRECENTLY DISCUSSED SERVICE (the user is browsing, "
+                    "not yet booking):\n"
+                    f"- Service/family: {recent[0].get('service_name', recent_service['service_name'])}\n"
+                    + "\n".join(details)
+                    + "\nFor short follow-ups like 'how long is it?', "
+                    "'what does it include?' or 'how much?', answer about "
+                    "this service. Do not ask the user which service they mean."
+                )
 
     need_services = intent in ("service_list", "price_question", "general", "faq")
     need_midwives = intent in ("midwife_list", "midwife_question", "general")
