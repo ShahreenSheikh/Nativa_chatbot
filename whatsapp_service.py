@@ -283,3 +283,28 @@ async def download_media(media_id: str) -> tuple:
     except Exception as e:
         print(f"[WhatsApp] Media download failed for {media_id}: {e}")
         return None, None
+
+async def send_whatsapp_image(to: str, link: str, caption: str = "") -> dict:
+    """Send an image (e.g. a service flyer) from a public https link. Never raises."""
+    if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        print(f"[WhatsApp] Skipped image send to {to} (not configured)")
+        return {"status": "skipped_demo"}
+    url = f"{GRAPH_URL}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "image",
+        "image": {"link": link, "caption": caption[:1024]},
+    }
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, json=payload, headers=headers, timeout=15.0)
+            res.raise_for_status()
+            return {"status": "sent", "response": res.json()}
+    except Exception as e:
+        print(f"[WhatsApp] Image send failed to {to}: {e}")
+        return {"status": "failed", "error": str(e)}
