@@ -4,8 +4,6 @@ import ai as _ai
 from service_intents import detect_service_key,is_context_followup,needs_empathy
 try: import persistent_store as _ps
 except Exception: _ps=None
-try: import db as _db
-except Exception: _db=None
 CONTACT_NUMBER="+971 50 7297197"
 SERVICE_LABELS={"nanny_training":"Nanny Training / Newborn Care Training","breastfeeding_support":"Breastfeeding Support","postnatal_support":"Postnatal Recovery Support","antenatal_preparation":"Antenatal Preparation & Education"}
 SERVICE_HELP={
@@ -77,45 +75,8 @@ async def _price_fallback(service_key):
     if unique:return "Current options are: "+"; ".join(f"{n} — AED {p}" for n,p in unique[:6])+"."
     return "I don't have a confirmed numeric price for that service in the current catalog, so I don't want to guess. Please contact us at +971 50 7297197 for the current price."
 
-def _human_takeover_active(session_id):
-    """Fail closed if takeover state cannot be checked: do not race staff."""
-    if not session_id or _db is None:
-        return False
-    try:
-        conversation=_db.get_conversation(session_id)
-        return bool(conversation and conversation.get("human_mode"))
-    except Exception as exc:
-        print(f"[Chat runtime] Could not verify human takeover for {session_id}: {exc}")
-        return True
-
 async def get_ai_response(session_id: str,user_message: str,source: str="website"):
-    _restore(session_id)
-
-    # This guard intentionally runs before the core AI (including its
-    # emergency-response shortcut), price fallback, and empathy formatting.
-    # Once staff take over, every customer message is logged for staff but
-    # the bot must not send any automated response.
-    if _human_takeover_active(session_id):
-        session=_ai._sessions.get(session_id)
-        if session:
-            _ai.append_history(session,user_message,"[handled by staff]")
-            _persist(session_id)
-        try:
-            _ai.save_chat_log(session_id,user_message,"[human_mode — awaiting staff reply]")
-        except Exception as exc:
-            print(f"[Chat runtime] Could not log human-owned message for {session_id}: {exc}")
-        return {
-            "reply":"",
-            "language":"en",
-            "lead_captured":False,
-            "booking_made":False,
-            "state":(session or {}).get("state"),
-            "human_mode":True,
-            "flyers":[],
-            "service_context":(session or {}).get("last_discussed_service_key"),
-        }
-
-    session=_ai._sessions.get(session_id)
+    _restore(session_id);session=_ai._sessions.get(session_id)
     normalized=(user_message or "").strip().lower().rstrip("!.,")
     previous=(session or {}).get("last_discussed_service_key")
     service_key=detect_service_key(user_message)
@@ -167,3 +128,273 @@ async def get_ai_response(session_id: str,user_message: str,source: str="website
         result["flyers"]=[]
     result["service_context"]=active_key
     _persist(session_id);return result
+
+# =============================================================================
+# WhatsApp-only additions. The website chat behaves exactly as before.
+#  - a chat that staff are handling gets NO reply of any kind
+#  - no more "Sorry, I didn't catch which one": the question is answered, then the options repeat
+#  - when a customer asks about one service and the answer has no price, the real price is added
+# =============================================================================
+from logger import save_chat_log as _save_chat_log
+
+try:
+    import db as _db_mod
+except Exception:
+    _db_mod = None
+
+import contextvars
+_WA_CTX = contextvars.ContextVar("wa_ctx", default=False)
+_orig_is_price_question = _is_price_question
+
+
+def _is_price_question(m):
+    """WhatsApp: match whole words only. The old check matched "fee" inside "breastfeeding",
+    so any breastfeeding message was answered with just a price line."""
+    if not _WA_CTX.get():
+        return _orig_is_price_question(m)
+    return bool(re.search(r"\b(price|prices|pricing|cost|costs|how much|fee|fees|charge|charges|aed)\b",
+                          (m or "").lower()))
+
+
+_CATCH_VARIANT = "Sorry, I didn't catch which one — "
+_CATCH_LANG = "I didn't catch that. Please reply with one of the languages we offer"
+_QUESTION_STARTS = ("what", "how", "do ", "does ", "can ", "is ", "are ", "which", "when",
+                    "where", "why", "tell me", "could", "should", "will ")
+
+
+def _human_mode_on(session_id):
+    try:
+        conv = _db_mod.get_conversation(session_id) if _db_mod else None
+        return bool(conv and conv.get("human_mode"))
+    except Exception:
+        return False
+
+
+def _is_price_question_wa(m):
+    token = _WA_CTX.set(True)
+    try:
+        return _is_price_question(m)
+    finally:
+        _WA_CTX.reset(token)
+
+
+def _looks_like_question(m):
+    t = (m or "").strip().lower()
+    return "?" in t or t.startswith(_QUESTION_STARTS) or _is_price_question_wa(t)
+
+
+async def _soften_reprompt(session, user_message, reply, source):
+    """Replace the blunt 'I didn't catch that' with a helpful answer + the same options."""
+    if _CATCH_VARIANT in reply:
+        head, options = reply.split(_CATCH_VARIANT, 1)
+        options = options[:1].upper() + options[1:]
+    else:
+        head, options = "", ("Which language would you like for your session? "
+                             + " or ".join(getattr(_ai, "SUPPORTED_LANGUAGES", ["English", "Arabic"])) + ".")
+    answer = ""
+    if session is not None and _looks_like_question(user_message):
+        try:
+            answer = (await _ai.compose_reply(session, user_message, {"intent": "general", "slots": {}}) or "").strip()
+        except Exception:
+            answer = ""
+    parts = [x for x in (head.strip(), _format(answer, source), options) if x]
+    return "\n\n".join(parts)
+
+
+# ---- keeping track of the topic (the service being discussed) --------------------------------
+_KEY_WORDS = {"nanny_training": ["nanny", "caregiver"], "breastfeeding_support": ["breastfeeding", "lactation"],
+              "postnatal_support": ["postnatal", "postpartum", "recovery"],
+              "antenatal_preparation": ["antenatal", "prenatal", "pregnancy"]}
+_CONFUSED = ("i don't have", "i do not have", "i'm not sure", "i am not sure", "can't answer", "cannot answer",
+             "not able to find", "don't have enough", "no information")
+
+
+def _service_rows(key, services):
+    out = []
+    for s in services:
+        hay = " ".join(str(s.get(k, "") or "") for k in ("service_name", "family_name", "category", "keywords")).lower()
+        if any(k in hay for k in _KEY_WORDS.get(key, [])):
+            out.append(s)
+    return out
+
+
+async def _topic_facts(key):
+    """Real catalog facts for the service being discussed (no extra AI call)."""
+    try:
+        services = await _ai.get_services()
+    except Exception:
+        return ""
+    lines = []
+    for s in _service_rows(key, services):
+        bits = [str(s.get("service_name", ""))]
+        if s.get("default_price_aed"):
+            bits.append("AED " + str(s["default_price_aed"]))
+        if s.get("duration_minutes"):
+            bits.append(str(s["duration_minutes"]) + " min")
+        if s.get("location_type"):
+            bits.append(str(s["location_type"]).replace("_", " "))
+        line = "- " + " | ".join(b for b in bits if b)
+        desc = (s.get("short_desc") or s.get("description") or "").strip()
+        if desc:
+            line += ": " + desc[:180]
+        if line not in lines:
+            lines.append(line)
+        if len(lines) >= 5:
+            break
+    return "\n".join(lines)
+
+
+def _ensure_topic_context():
+    """Give the answering step the facts of the current service, so follow-up questions stay on topic."""
+    current = _ai._build_compose_context
+    if getattr(current, "_topic_wrapped", False):
+        return
+
+    async def wrapped(intent, slots, session=None):
+        text = await current(intent, slots, session)
+        try:
+            key = (session or {}).get("last_discussed_service_key")
+            if _WA_CTX.get() and key in SERVICE_LABELS:
+                facts = await _topic_facts(key)
+                text += ("\n\nCURRENT TOPIC: the customer is talking about " + SERVICE_LABELS[key] + "."
+                         + ("\nFacts:\n" + facts if facts else "")
+                         + "\nAnswer their follow-up questions about THIS service. If they name a different service, "
+                           "switch to that one. Do not bring up other services unless asked. If their question is "
+                           "unclear, ask ONE short clarifying question instead of guessing.")
+        except Exception:
+            pass
+        return text
+
+    wrapped._topic_wrapped = True
+    _ai._build_compose_context = wrapped
+
+
+def _new_session(session_id):
+    from datetime import datetime
+    return {"id": session_id, "history": [], "lead": {}, "last_booking": None, "past_bookings": [],
+            "state": _ai.STATE_BROWSING, "awaiting_field": None, "email_asked": False,
+            "demo_mode": False, "last_seen": datetime.utcnow()}
+
+
+def record_conversation_turn(session_id, role, text):
+    """Remember what was said while staff were handling a chat, so the bot has the context later."""
+    if not text:
+        return
+    try:
+        _restore(session_id)
+        s = _ai._sessions.get(session_id)
+        if s is None:
+            s = _ai._sessions[session_id] = _new_session(session_id)
+        s.setdefault("history", []).append({"role": role, "content": str(text)[:500]})
+        s["history"] = s["history"][-12:]
+        _persist(session_id)
+    except Exception as e:
+        print(f"[Context] could not record a turn: {e}")
+
+
+async def handback_session(session_id, service_key=None, note="", followup_text=""):
+    """Turn the bot back ON for a chat staff were handling, with context, so the booking can continue.
+    Returns the follow-up text to send to the customer."""
+    try:
+        try:
+            _db_mod.set_human_mode(session_id, False, channel="whatsapp")
+        except TypeError:
+            _db_mod.set_human_mode(session_id, False)
+    except Exception as e:
+        print(f"[Handback] ERROR turning the bot on: {e}")
+    _restore(session_id)
+    s = _ai._sessions.get(session_id)
+    if s is None:
+        s = _ai._sessions[session_id] = _new_session(session_id)
+    key = service_key if service_key in SERVICE_LABELS else s.get("last_discussed_service_key")
+    label = SERVICE_LABELS.get(key, "")
+    if key:
+        s["last_discussed_service_key"] = key
+        try:
+            rows = _service_rows(key, await _ai.get_services())
+            if rows:  # lets "book it" go straight into the normal booking steps
+                s["last_recommended"] = [{"service_id": rows[0]["service_id"],
+                                          "service_name": rows[0].get("family_name") or rows[0].get("service_name", label)}]
+        except Exception:
+            pass
+    if note:
+        s.setdefault("history", []).append({"role": "assistant", "content": "[Staff note for the assistant: " + note[:400] + "]"})
+    text = (followup_text or "").strip()
+    if not text:
+        text = ("Thank you for your patience! Would you like to book " + label + "? Reply 'book it' and I'll show the available times."
+                if label else "Thank you for your patience! I'm here again if you'd like to continue with your booking. Which service would you like to book?")
+    s.setdefault("history", []).append({"role": "assistant", "content": text})
+    s["history"] = s["history"][-12:]
+    _persist(session_id)
+    return text
+
+
+_core_get_ai_response = get_ai_response  # the original function, defined above
+
+
+async def get_ai_response(session_id: str, user_message: str, source: str = "website"):
+    if source != "whatsapp":
+        return await _core_get_ai_response(session_id, user_message, source)
+
+    # 1) Staff are handling this chat: say nothing at all (not even price/empathy/emergency text).
+    if _human_mode_on(session_id):
+        try:
+            _save_chat_log(session_id, user_message, "[human_mode — awaiting staff reply]")
+        except Exception:
+            pass
+        record_conversation_turn(session_id, "user", user_message)
+        return {"reply": "", "flyers": [], "human_mode": True}
+
+    _ensure_topic_context()
+    token = _WA_CTX.set(True)
+    try:
+        result = await _core_get_ai_response(session_id, user_message, source)
+    finally:
+        _WA_CTX.reset(token)
+    if result.get("human_mode"):
+        result["reply"] = ""
+        result["flyers"] = []
+        return result
+
+    reply = result.get("reply") or ""
+    session = _ai._sessions.get(session_id)
+
+    # 1b) Price asked with no service in mind used to produce an EMPTY reply (customer got nothing).
+    if not reply and _is_price_question_wa(user_message):
+        try:
+            reply = (await _ai.compose_reply(session, user_message, {"intent": "price_question", "slots": {}}) or "").strip()
+        except Exception:
+            reply = ""
+        if not reply:
+            reply = "Which service would you like the price for? Reply with the service name and I'll share it."
+        reply = _format(reply, source)
+
+    # 2) No more "Sorry, I didn't catch which one" / "I didn't catch that".
+    if reply and (_CATCH_VARIANT in reply or _CATCH_LANG in reply):
+        reply = await _soften_reprompt(session, user_message, reply, source)
+
+    # 3) Asked about one service but the answer shows no price: add the real price from the catalog.
+    service_key = detect_service_key(user_message)
+    if (reply and service_key and not _is_service_list_question(user_message)
+            and not re.search(r"\bAED\s*\d", reply, re.I)
+            and result.get("state") in (_ai.STATE_BROWSING, _ai.STATE_BOOKED, _ai.STATE_SERVICE_SELECTING)):
+        try:
+            price_text = await _price_fallback(service_key)
+        except Exception:
+            price_text = ""
+        if re.search(r"\bAED\s*\d", price_text or ""):
+            reply = reply.rstrip() + "\n\n" + _format(price_text, source)
+
+    # 4) Confused? Ask ONE short question instead of guessing or going silent.
+    low = reply.lower()
+    key = (session or {}).get("last_discussed_service_key")
+    ask = (f"Just to make sure I help with the right thing: is this about {SERVICE_LABELS[key]}, or a different service?"
+           if key in SERVICE_LABELS else
+           "Could you tell me a little more, or which service you mean (Antenatal, Postnatal, Breastfeeding or Nanny Training)?")
+    if not reply:
+        reply = ask
+    elif (any(p in low for p in _CONFUSED) and "contact us" not in low and not reply.rstrip().endswith("?")):
+        reply = reply.rstrip() + "\n\n" + ask
+
+    result["reply"] = reply
+    return result
