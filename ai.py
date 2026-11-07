@@ -861,7 +861,7 @@ def handoff_reply(session: dict) -> str:
     progress, mention it briefly so the user knows their state isn't
     lost."""
     base = ("You can reach our team directly at "
-            "+971 50 729 7197 or email info@nativacare.com. "
+            "+971 56 473 0502 or email info@nativacare.com. "
             "Someone will be able to help with anything I can't.")
     lead = session.get("lead") or {}
     candidate = session.get("candidate_service") or {}
@@ -1346,17 +1346,25 @@ COMPOSE_SYSTEM_PROMPT_TMPL = """You are a warm, professional midwife assistant f
 
 SAFETY: Never diagnose, prescribe, or replace a midwife or doctor. For emergencies say to call 998 or go to the nearest hospital.
 
+INSURANCE POLICY (FIXED — NEVER CONTRADICT): NativaCare services are NOT covered by any insurance. If asked about insurance, coverage, being insured, reimbursement, claims, or direct billing, clearly say: "NativaCare services are not covered by any insurance. All services are privately paid for by the client." Do not suggest that insurance coverage, direct billing, or reimbursement is available.
+
+PRICING POLICY (AUTHORITATIVE):
+- The bookable home services are Antenatal Education & Preparation, Postnatal Recovery Support, and Breastfeeding & Lactation Support. Each has several pricing options. Do not invent or guess a starting AED amount or individual tier prices. For detailed pricing for any service, tell the client to call +971 56 473 0502 or email info@nativacare.com.
+- The Complete Journey package costs AED 6,800.
+- The Fourth Trimester package costs AED 5,200.
+- Use these exact package prices when asked. Do not invent prices for other packages.
+
 STYLE:
 - Warm, supportive, factual. Use ONLY the CONTEXT below — do not invent prices, midwives, or services.
 - If a question can't be answered from CONTEXT, say so and offer to help with bookings.
 
 PHRASING:
 - When the user asks about timings, availability, schedules, or "when" — say you can show real available slots once they pick a service or class. Do NOT deflect to the phone for booking timings. Example: "I can show available slots once we pick a service — reply 'book Hypnobirthing' (or whichever) and I'll show times."
-- When you need to refer the user to phone/email (e.g. service genuinely can't be arranged through chat), give the contact info directly in the reply: "Call +971507297197 or email info@nativacare.com."
+- When you need to refer the user to phone/email (e.g. service genuinely can't be arranged through chat), give the contact info directly in the reply: "Call +971564730502 or email info@nativacare.com."
 - Don't offer to "help contact" — just give the info.
 - When you offer to do something (book, show slots, etc.), tell the user the EXACT phrase to reply with. Example: instead of "would you like to proceed?", say "reply 'book it' and I'll show available times." Don't ask vague yes/no questions you can't act on.
 - Do NOT offer to "show you available slots" or "show times" as a follow-up. If a service is active, suggest the user reply "book it" — the booking flow will show the slots, not you.
-- CRITICAL — PACKAGES: Packages (Pregnancy Foundation, Full Caseload Care, Postnatal Recovery Bundle, Newborn Starter, Mummy and Baby Wellbeing, or anything in the PACKAGES section of the catalog) are NOT bookable through chat. NEVER tell the user to "reply 'book [package name]'" or say a package "is available" to book. When discussing a package, ALWAYS include the phone number: "To book the Newborn Starter, call +971507297197 or email info@nativacare.com." If the user wants a single service instead, suggest one from the bookable services list.
+- CRITICAL — PACKAGES: Packages (Pregnancy Foundation, Full Caseload Care, Postnatal Recovery Bundle, Newborn Starter, Mummy and Baby Wellbeing, or anything in the PACKAGES section of the catalog) are NOT bookable through chat. NEVER tell the user to "reply 'book [package name]'" or say a package "is available" to book. When discussing a package, ALWAYS include the phone number: "To book the Newborn Starter, call +971564730502 or email info@nativacare.com." If the user wants a single service instead, suggest one from the bookable services list.
 - When answering a "what services do you offer" style question, after listing the bookable services, add one short closing sentence mentioning that packages (bundles) are also available and that the user can ask about them — don't list the packages themselves unless asked specifically about packages.
 
 LENGTH AND FORMAT:
@@ -1374,7 +1382,9 @@ async def _build_compose_context(intent: str, slots: dict,
     clinic = await get_clinic_info()
     parts.append(f"Clinic: {clinic.get('clinic_name', CLINIC_NAME)}")
     parts.append(f"Address: {clinic.get('address', '')}")
-    parts.append(f"Phone: {clinic.get('phone', '')}")
+    # Always use the current approved public contact number, not a stale
+    # phone value that may still exist in the clinic-info data source.
+    parts.append("Phone: +971 56 473 0502")
     if clinic.get("demo_mode", "").upper() == "TRUE":
         parts.append("(Note: this deployment uses demo data; verify with the clinic.)")
 
@@ -1477,7 +1487,7 @@ async def _build_compose_context(intent: str, slots: dict,
         parts.append(
             "\nServices we OFFER but don't have a midwife scheduled for "
             "right now (mention by name if asked 'what else do you offer'; "
-            "say something like '... — for those, call +971507297197 to "
+            "say something like '... — for those, call +971564730502 to "
             "arrange'): "
             + ", ".join(unbookable_names[:15])
         )
@@ -1756,11 +1766,11 @@ def llm_error_reply(session: dict, err: Exception) -> str:
     if is_rate:
         opening = ("I'm temporarily at capacity and can't process that "
                    "right now. Please try again in a few minutes, or "
-                   "reach our team directly at +971 50 729 7197 or "
+                   "reach our team directly at +971 56 473 0502 or "
                    "info@nativacare.com.")
     else:
         opening = ("Something went wrong on my end. Please try again, "
-                   "or reach our team at +971 50 729 7197 or "
+                   "or reach our team at +971 56 473 0502 or "
                    "info@nativacare.com.")
 
     lead = session.get("lead") or {}
@@ -2120,7 +2130,7 @@ async def render_service_browse_list() -> str:
     services = await bookable_services()
     if not services:
         return ("I'm having trouble loading the service list. Please call us "
-                "at +971 50 729 7197.")
+                "at +971 56 473 0502.")
     lines = ["We offer the following services:\n"]
     display_services = await group_services_by_family(services)
     by_cat: dict = {}
@@ -2153,7 +2163,7 @@ async def render_service_menu() -> str:
     services = await bookable_services()
     if not services:
         return ("I'm having trouble loading the service list. Please call us "
-                "at +971 50 729 7197.")
+                "at +971 56 473 0502.")
     lines = ["Which service would you like to book?"]
     # Group by category for readability, and collapse tier variants
     # (half day/full day, single-visit/3-visit/5-visit, etc.) into one
@@ -2461,7 +2471,7 @@ async def render_unbookable_service_message(service_id: str,
                        if s.get("category") == category][:5]
 
     msg = (f"I don't have a midwife scheduled for {service_name} right now. "
-           f"Please call us at +971 50 729 7197 or email info@nativacare.com "
+           f"Please call us at +971 56 473 0502 or email info@nativacare.com "
            f"and we'll arrange it for you.")
     if suggestions:
         msg += "\n\nIn the meantime, these similar services can be booked through chat:\n"
@@ -2509,7 +2519,7 @@ async def render_next_available_days_by_language(
     days = await get_next_available_days(service_id, num_days=num_days)
     if not days:
         return ("I couldn't find any open slots in the next "
-                f"{num_days} days. Please call us at +971 50 729 7197 to "
+                f"{num_days} days. Please call us at +971 56 473 0502 to "
                 "discuss options.")
 
     # Filter each day's slots by language, keep only days with 1+ slot
@@ -2523,7 +2533,7 @@ async def render_next_available_days_by_language(
     if not filtered:
         return (f"I don't have any {language}-language slots available for "
                 f"{service_name or 'this service'} in the next {num_days} "
-                f"days. Please call us at +971 50 729 7197 to discuss "
+                f"days. Please call us at +971 56 473 0502 to discuss "
                 f"other options, or reply with a different language.")
 
     lines = [f"Available days for {language} sessions:"]
@@ -2644,11 +2654,11 @@ async def render_next_available_days(service_id: str, num_days: int = 7,
             return (
                 "Your assigned midwife doesn't have any more openings in "
                 f"the next {num_days} days. Please call us at "
-                "+971 50 729 7197 to discuss options — we can look at a "
+                "+971 56 473 0502 to discuss options — we can look at a "
                 "different midwife or a later date."
             )
         return ("I couldn't find any open slots in the next "
-                f"{num_days} days. Please call us at +971 50 729 7197 to "
+                f"{num_days} days. Please call us at +971 56 473 0502 to "
                 "discuss options.")
     lines = ["Which day works for you?"]
     for d in days:
@@ -2671,7 +2681,7 @@ async def render_slots_for_day(service_id: str, date_str: str,
             return (
                 f"Your assigned midwife doesn't have any openings on "
                 f"{date_str}. Would you like to try another day, or "
-                f"call +971 50 729 7197 to discuss a different midwife?"
+                f"call +971 56 473 0502 to discuss a different midwife?"
             )
         return (f"No slots available on {date_str}. Would you like to try "
                 "another day?")
@@ -2852,7 +2862,7 @@ async def render_days_by_type(service_id: str, day_type: str,
         sn = service_name or "this service"
         nothing_word = ("weekend" if day_type == "weekend" else "weekday")
         return (f"No {nothing_word} slots are available for {sn} in the "
-                f"next two weeks. Please call us at +971 50 729 7197 "
+                f"next two weeks. Please call us at +971 56 473 0502 "
                 f"to discuss alternatives.")
     lines = [f"{'Weekend' if day_type == 'weekend' else 'Weekday'} availability:"]
     for d, parsed, n in matching[:7]:
@@ -2925,7 +2935,7 @@ async def render_slots_for_day_filtered(service_id: str, date_str: str,
     if not bucket_days:
         return (f"No {bucket} slots are available in the next 7 days. "
                 f"{date_str} has {len(day.slots)} other slot(s) if you'd "
-                f"like to see them, or call us at +971 50 729 7197 to "
+                f"like to see them, or call us at +971 56 473 0502 to "
                 f"arrange something else.")
 
     # Found some — name them
@@ -3015,7 +3025,7 @@ async def render_days_filtered(service_id: str, bucket: str,
     if not bucket_days:
         sn = service_name or "this service"
         return (f"No {bucket} slots are available for {sn} in the next 7 "
-                f"days. Please call us at +971 50 729 7197 to discuss "
+                f"days. Please call us at +971 56 473 0502 to discuss "
                 f"alternatives, or reply with another time of day "
                 f"(morning / afternoon).")
 
@@ -3421,6 +3431,37 @@ async def get_ai_response(session_id: str, user_message: str,
     if wants_human_handoff(user_message):
         _debug_event("Human handoff requested — short-circuit with contact info")
         reply = handoff_reply(session)
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    # Fixed clinic-policy answers. Keep these deterministic so the LLM
+    # cannot invent insurance coverage, reimbursement, or prices.
+    if re.search(r"\\b(insurance|insured|insurer|coverage|covered|reimburse(?:ment)?|claim|direct billing)\\b", user_message or "", re.IGNORECASE):
+        _debug_event("Insurance policy question — deterministic reply")
+        reply = (
+            "NativaCare services are not covered by any insurance. "
+            "All services are privately paid for by the client."
+        )
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    if re.search(r"\\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\\b", user_message or "", re.IGNORECASE):
+        msg = (user_message or "").lower()
+        if "complete journey" in msg:
+            reply = "The Complete Journey package is AED 6,800. For more information, please call +971 56 473 0502 or email info@nativacare.com."
+        elif "fourth trimester" in msg:
+            reply = "The Fourth Trimester package is AED 5,200. For more information, please call +971 56 473 0502 or email info@nativacare.com."
+        else:
+            reply = (
+                "Our bookable home services include Antenatal Education & Preparation, "
+                "Postnatal Recovery Support, and Breastfeeding & Lactation Support. "
+                "Each service has several pricing options, so please call +971 56 473 0502 "
+                "or email info@nativacare.com for detailed pricing. "
+                "Our packages are The Complete Journey (AED 6,800) and "
+                "The Fourth Trimester (AED 5,200)."
+            )
         append_history(session, user_message, reply)
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
@@ -3868,7 +3909,7 @@ async def get_ai_response(session_id: str, user_message: str,
             cur_svc = cand.get("service_name", "your selected service")
             label = pkg_name if pkg_name != "package" else "packages"
             reply = (f"{label.capitalize()} need to be arranged by phone — "
-                     f"call us at +971 50 729 7197 or email "
+                     f"call us at +971 56 473 0502 or email "
                      f"info@nativacare.com.\n\n"
                      f"Should I keep your booking for the **{cur_svc}**? "
                      f"Reply 'yes' to continue with that, or 'cancel' to "
@@ -4056,7 +4097,7 @@ async def get_ai_response(session_id: str, user_message: str,
             reply = (f"I don't currently have any midwives available for "
                      f"{lang}-language sessions. Please pick from: "
                      + ", ".join(SUPPORTED_LANGUAGES) + ", or call us at "
-                     f"+971 50 729 7197 to discuss options.")
+                     f"+971 56 473 0502 to discuss options.")
             append_history(session, user_message, reply)
             save_chat_log(session_id, user_message, reply)
             return response_payload(reply, session)
@@ -4260,7 +4301,7 @@ async def get_ai_response(session_id: str, user_message: str,
                 )
             else:
                 reply = (f"I'd need to handle {new_slots.get('service_name', 'that service')} "
-                         f"by phone — call us at +971 50 729 7197. "
+                         f"by phone — call us at +971 56 473 0502. "
                          f"Should I keep your current {lead.get('service_name', 'booking')} "
                          f"booking, or cancel it? Reply 'yes' to confirm the "
                          f"current booking, or 'cancel' to start fresh.")
@@ -4276,7 +4317,7 @@ async def get_ai_response(session_id: str, user_message: str,
             _debug_event(f"Package reference in AWAITING_CONFIRM: {pkg_name}")
             label = pkg_name if pkg_name != "package" else "Packages"
             reply = (f"{label} need to be arranged by phone — "
-                     f"call us at +971 50 729 7197 or "
+                     f"call us at +971 56 473 0502 or "
                      f"email info@nativacare.com.\n\n"
                      f"Should I keep your current {lead.get('service_name', 'booking')} "
                      f"booking for {lead.get('appointment_date', '')} at "
@@ -4795,7 +4836,7 @@ async def get_ai_response(session_id: str, user_message: str,
                 session.pop("address_rejection_count", None)
                 reply = (f"Home visits are currently Abu Dhabi only, and "
                          f"\"{addr}\" doesn't look like an Abu Dhabi address. "
-                         f"Please call us at +971 50 729 7197 to discuss "
+                         f"Please call us at +971 56 473 0502 to discuss "
                          f"options. I'm happy to help with anything else.")
             else:
                 reply = (f"Our home visits are Abu Dhabi only, and \"{addr}\" "
@@ -4821,7 +4862,7 @@ async def get_ai_response(session_id: str, user_message: str,
                 session.pop("address_rejection_count", None)
                 reply = (f"I'd need a more specific address than \"{addr}\" "
                          f"to arrange a home visit. Please call us at "
-                         f"+971 50 729 7197 to book this one. Happy to "
+                         f"+971 56 473 0502 to book this one. Happy to "
                          f"help with anything else.")
             else:
                 reply = (f"\"{addr}\" is a bit too general — could you give "
@@ -4890,7 +4931,7 @@ async def get_ai_response(session_id: str, user_message: str,
             _debug_event(f"Package reference in SERVICE_SELECTING: {pkg_name}")
             label = pkg_name if pkg_name != "package" else "Packages"
             reply = (f"{label} need to be arranged by phone — call us at "
-                     f"+971 50 729 7197 or email info@nativacare.com. "
+                     f"+971 56 473 0502 or email info@nativacare.com. "
                      f"Would you like to book a single service through chat "
                      f"instead? Reply with the service name (e.g. 'book "
                      f"Hypnobirthing').")
@@ -5046,7 +5087,7 @@ async def get_ai_response(session_id: str, user_message: str,
             _debug_event(f"Package reference in BROWSING/book: {pkg_name}")
             label = pkg_name if pkg_name != "package" else "Packages"
             reply = (f"{label} need to be arranged by phone — call us at "
-                     f"+971 50 729 7197 or email info@nativacare.com. "
+                     f"+971 56 473 0502 or email info@nativacare.com. "
                      f"Would you like to book a single service through chat "
                      f"instead? Reply with the service name (e.g. 'book "
                      f"Hypnobirthing').")
