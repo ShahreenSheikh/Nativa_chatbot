@@ -211,10 +211,15 @@ def parse_incoming_messages(payload: dict) -> list:
 def parse_message_echoes(payload: dict) -> list:
     """Extract staff-authored WhatsApp Business App echoes.
 
-    With WhatsApp Coexistence enabled, Meta sends these under the
-    smb_message_echoes webhook field. The to field identifies the customer
-    whose conversation must enter human takeover; from is the business
-    number and must not be used as the conversation key.
+    Meta sends these under the smb_message_echoes webhook field when
+    WhatsApp Coexistence is enabled. Automatic takeover also requires the
+    app to be subscribed to smb_message_echoes in the Meta App Dashboard;
+    subscribing only to messages is not sufficient.
+
+    Each echo's to value is the CUSTOMER number whose conversation must
+    enter human takeover. from is the business number and must not be used
+    as the conversation key. The parser accepts the documented string form
+    and defensive dict/list recipient variants.
     """
     out = []
     for entry in payload.get("entry", []):
