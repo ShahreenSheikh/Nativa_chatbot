@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>NativaCare · WhatsApp Flow Test</title>
+<style>
+:root{color-scheme:dark;--bg:#101116;--panel:#191b24;--panel2:#20232e;--line:#303442;--muted:#a4a9b8;--pink:#ff7896;--blue:#8ca8ff;--green:#66d5a0}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 15% 0%,#272032 0,transparent 42%),var(--bg);color:#f5f5f8;font:15px/1.5 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:1180px;margin:auto;padding:28px 20px 48px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:22px}.brand{display:flex;align-items:center;gap:12px}.mark{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#ff7896,#9b8cff);display:grid;place-items:center;font-weight:800;color:#17131b}.eyebrow{color:var(--pink);font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}.top h1{font-size:23px;margin:1px 0 0}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:9px 12px;border-radius:999px;color:var(--muted);font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:#8b91a1}.dot.ok{background:var(--green);box-shadow:0 0 10px #66d5a077}.layout{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:18px;align-items:start}.panel{background:rgba(25,27,36,.94);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 18px 55px #0003}.chathead{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between}.chathead strong{font-size:15px}.chathead small{display:block;color:var(--muted);font-size:12px}.chip{font-size:11px;border:1px solid #4b4054;color:#ffb2c3;border-radius:999px;padding:5px 9px}.messages{height:560px;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:14px;background:linear-gradient(#151720,#14161d)}.msg{max-width:min(82%,650px);padding:12px 14px;border-radius:15px;white-space:pre-wrap;overflow-wrap:anywhere}.bot{align-self:flex-start;background:#242733;border:1px solid #343846;border-bottom-left-radius:5px}.user{align-self:flex-end;background:#365d51;border:1px solid #477a68;border-bottom-right-radius:5px}.staff{align-self:flex-end;background:#3c3048;border:1px solid #665075;border-bottom-right-radius:5px}.meta{font-size:10px;color:#aeb4c4;margin-top:6px}.flyers{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:10px;width:min(100%,520px)}.flyer{background:#11131a;border:1px solid #3b3f4c;border-radius:12px;overflow:hidden}.flyer img{display:block;width:100%;height:auto;min-height:110px;object-fit:contain;background:#252834}.flyer span{display:block;padding:6px 9px;color:#b9bfd0;font-size:11px}.composer{padding:15px;border-top:1px solid var(--line);display:flex;gap:9px;background:#191b24}.composer input{min-width:0;flex:1;background:#11131a;color:#fff;border:1px solid #3b4050;border-radius:12px;padding:13px 14px;font:inherit;outline:none}.composer input:focus{border-color:#a38aff}.btn{border:0;border-radius:11px;padding:11px 15px;background:var(--pink);color:#21131a;font-weight:800;cursor:pointer}.btn:disabled{opacity:.45;cursor:not-allowed}.btn.secondary{background:#303544;color:#eef0f6;border:1px solid #454b5c}.btn.warn{background:#49303b;color:#ffc0cf;border:1px solid #744657}.side{padding:18px}.side h2{font-size:14px;margin:0 0 10px}.side p{font-size:12px;color:var(--muted);margin:0 0 14px}.section{padding-bottom:17px;margin-bottom:17px;border-bottom:1px solid var(--line)}.row{display:flex;gap:8px;flex-wrap:wrap}.row .btn{font-size:12px;padding:9px 11px}.info{padding:11px 12px;background:#12141b;border:1px solid var(--line);border-radius:11px;font-size:12px;color:#c4c9d6;margin-top:9px}.info b{color:#fff}.warning{border-color:#674b36;background:#261f1b;color:#e9c8a7}.fieldlabel{display:block;color:var(--muted);font-size:11px;margin:0 0 6px}.session{width:100%;background:#11131a;border:1px solid var(--line);color:#dce0eb;padding:9px;border-radius:9px;font-size:11px}.tiny{font-size:10px!important;color:#9299aa!important}.raw{width:100%;max-height:170px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#101218;padding:10px;border-radius:9px;color:#aeb7ca;font:11px/1.45 ui-monospace,monospace}.typing{color:var(--muted);font-size:12px;padding:0 20px 12px}.banner{padding:11px 14px;background:#2b2228;border-bottom:1px solid #634451;color:#ffc1d0;font-size:12px}.hidden{display:none!important}
+@media(max-width:850px){.layout{grid-template-columns:1fr}.messages{height:55vh;min-height:390px}.side{order:2}.top{align-items:flex-start;flex-direction:column}}@media(max-width:480px){.wrap{padding:17px 10px 30px}.messages{padding:14px}.msg{max-width:92%}.composer{padding:10px}.composer .btn{padding:10px}.flyers{gap:6px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+ <div class="brand"><div class="mark">N</div><div><div class="eyebrow">Internal QA workspace</div><h1>NativaCare · WhatsApp Flow Test</h1></div></div>
+ <div class="status"><span class="dot" id="healthDot"></span><span id="healthText">Checking backend…</span></div>
+</header>
+<div class="layout">
+ <section class="panel">
+  <div class="chathead"><div><strong>Customer conversation</strong><small>WhatsApp-style preview · API source: whatsapp</small></div><span class="chip">SIMULATOR</span></div>
+  <div id="takeoverBanner" class="banner hidden">Staff takeover simulated in this browser. Messages are not being sent to the backend.</div>
+  <div class="messages" id="messages" aria-live="polite">
+   <div class="msg bot">Welcome to the NativaCare test console. Send a message to test the WhatsApp conversation logic without sending a real WhatsApp message.<div class="meta">Test console</div></div>
+  </div>
+  <div class="typing hidden" id="typing">NativaCare is preparing a reply…</div>
+  <form class="composer" id="composer"><input id="messageInput" autocomplete="off" placeholder="Type a customer message…" aria-label="Customer message"><button class="btn" id="sendBtn" type="submit">Send</button></form>
+ </section>
+ <aside class="panel side">
+  <div class="section">
+   <h2>Backend connection</h2><p>Checks the live Railway service. No WhatsApp credentials are used.</p>
+   <div class="row"><button class="btn secondary" id="healthBtn" type="button">Check health</button><a class="btn secondary" href="/docs" target="_blank" rel="noopener" style="text-decoration:none">API docs</a></div>
+   <div class="info" id="healthInfo">Waiting for health check…</div>
+  </div>
+  <div class="section">
+   <h2>Conversation controls</h2><p>Each test uses an isolated session ID so it won't reuse a customer's WhatsApp session.</p>
+   <label class="fieldlabel" for="sessionId">Test session</label><input class="session" id="sessionId" readonly>
+   <div class="row" style="margin-top:10px"><button class="btn secondary" id="newSession" type="button">New session</button><button class="btn secondary" id="clearChat" type="button">Clear view</button></div>
+  </div>
+  <div class="section">
+   <h2>Staff takeover simulation</h2><p><b>Browser-only simulation.</b> This does not change the production database or activate real WhatsApp human mode.</p>
+   <div class="row"><button class="btn warn" id="takeoverBtn" type="button">Simulate staff takeover</button><button class="btn secondary" id="resumeBtn" type="button">Resume bot</button></div>
+   <div class="info" id="takeoverInfo">Bot simulation is active.</div>
+   <button class="btn secondary" id="staffReplyBtn" type="button" style="margin-top:9px;width:100%">Add sample staff reply</button>
+  </div>
+  <div class="section">
+   <h2>Latest API response</h2><p>Useful for checking returned reply, state, flyer paths and errors.</p><pre class="raw" id="rawResponse">No API call yet.</pre>
+  </div>
+  <p class="tiny">This page is a QA helper, not a WhatsApp client. It does not contact customers, send messages, or verify Meta webhook delivery.</p>
+ </aside>
+</div>
+</div>
+<script>
+(()=>{
+ const $=id=>document.getElementById(id);
+ let sessionId="",simulatedTakeover=false,lastResponse=null;
+ const flyerMap=[
+  {key:"postnatal",file:"flyer1.jpg",label:"Postnatal recovery"},
+  {key:"antenatal",file:"flyer2.jpg",label:"Antenatal preparation"},
+  {key:"nanny",file:"flyer3.jpg",label:"Newborn & nanny training"},
+  {key:"breastfeeding",file:"flyer4.jpg",label:"Breastfeeding support"}
+ ];
+ function newId(){return "wa_test_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,7)}
+ function setSession(){sessionId=newId();$("sessionId").value=sessionId}
+ function addMessage(text,kind="bot",meta=""){
+  const node=document.createElement("div");node.className="msg "+kind;
+  const body=document.createElement("div");body.textContent=text;node.appendChild(body);
+  if(meta){const m=document.createElement("div");m.className="meta";m.textContent=meta;node.appendChild(m)}
+  $("messages").appendChild(node);$("messages").scrollTop=$("messages").scrollHeight;return node;
+ }
+ function showFlyers(parent,items){
+  if(!items.length)return;
+  const grid=document.createElement("div");grid.className="flyers";
+  items.forEach(item=>{
+   const card=document.createElement("div");card.className="flyer";
+   const img=document.createElement("img");img.src="/assets/"+item.file;img.alt=item.label;img.loading="lazy";
+   img.onerror=()=>{img.alt="Could not load "+item.file;img.style.minHeight="90px"};
+   const label=document.createElement("span");label.textContent=item.label;
+   card.append(img,label);grid.appendChild(card);
+  });
+  parent.appendChild(grid);$("messages").scrollTop=$("messages").scrollHeight;
+ }
+ function greeting(s){return /^(hi|hey|hiya|hello|salam|assalamualaikum|assalamu alaikum|good morning|good afternoon|good evening)[!., ]*$/i.test((s||"").trim())}
+ function selectedFlyers(s){
+  const t=(s||"").toLowerCase(),out=[];
+  const groups=[
+   ["breastfeeding",["breastfeed","latch","latching","lactation","colostrum","milk supply","nursing"]],
+   ["antenatal",["antenatal","prenatal","pregnancy preparation","birth preparation","childbirth education"]],
+   ["postnatal",["postnatal","postpartum","after birth","recovery support","new mother recovery"]],
+   ["nanny",["nanny","caregiver training","care giver training","newborn training"]]
+  ];
+  groups.forEach(([key,words])=>{if(words.some(w=>t.includes(w)))out.push(flyerMap.find(x=>x.key===key))});
+  return out;
+ }
+ function syncControls(){
+  $("takeoverBanner").classList.toggle("hidden",!simulatedTakeover);
+  $("takeoverInfo").textContent=simulatedTakeover?"Staff takeover is simulated. The API is not called while takeover is active.":"Bot simulation is active.";
+  $("sendBtn").disabled=simulatedTakeover;
+  $("messageInput").disabled=simulatedTakeover;
+ }
+ async function checkHealth(){
+  $("healthText").textContent="Checking backend…";$("healthDot").className="dot";
+  try{
+   const r=await fetch("/health",{cache:"no-store"});const data=await r.json();
+   if(!r.ok)throw new Error("HTTP "+r.status);
+   $("healthDot").className="dot ok";$("healthText").textContent="Backend online";
+   $("healthInfo").textContent="HTTP "+r.status+" · "+(data.status||"response received")+" · "+(data.service||"NativaCare");
+  }catch(e){$("healthText").textContent="Backend check failed";$("healthInfo").textContent=String(e)}
+ }
+ async function sendMessage(message){
+  if(!message.trim()||simulatedTakeover)return;
+  addMessage(message,"user","Customer · simulated WhatsApp");
+  const typing=$("typing");typing.classList.remove("hidden");$("sendBtn").disabled=true;
+  const expectedFlyers=greeting(message)?flyerMap:selectedFlyers(message);
+  try{
+   const response=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,message,source:"whatsapp"})});
+   const data=await response.json();lastResponse=data;
+   $("rawResponse").textContent=JSON.stringify(data,null,2);
+   if(!response.ok)throw new Error(data.detail||("HTTP "+response.status));
+   const bubble=addMessage(data.reply||"(No bot reply returned)","bot","NativaCare · API source=whatsapp");
+   if(expectedFlyers.length)showFlyers(bubble,expectedFlyers);
+   else if(Array.isArray(data.flyers)&&data.flyers.length){
+    const derived=data.flyers.map(url=>flyerMap.find(x=>url.endsWith(x.file))).filter(Boolean);
+    showFlyers(bubble,derived);
+   }
+   if(data.human_mode)addMessage("Backend reports human_mode=true. No automated response should be sent.","staff","API status");
+  }catch(e){
+   $("rawResponse").textContent=String(e);addMessage("The backend request failed: "+String(e),"bot","API error");
+  }finally{typing.classList.add("hidden");$("sendBtn").disabled=simulatedTakeover}
+ }
+ $("composer").addEventListener("submit",e=>{e.preventDefault();const v=$("messageInput").value;$("messageInput").value="";sendMessage(v)});
+ $("healthBtn").addEventListener("click",checkHealth);
+ $("newSession").addEventListener("click",()=>{setSession();$("messages").innerHTML="";addMessage("New isolated test session started. Send a message to begin.","bot","Test console");$("rawResponse").textContent="No API call in this session.";simulatedTakeover=false;syncControls()});
+ $("clearChat").addEventListener("click",()=>{$("messages").innerHTML="";addMessage("Conversation view cleared. The backend session remains unchanged.","bot","Test console")});
+ $("takeoverBtn").addEventListener("click",()=>{simulatedTakeover=true;syncControls();addMessage("A staff member has taken over this simulated conversation. Bot input is paused in this browser only.","staff","Simulated staff takeover")});
+ $("resumeBtn").addEventListener("click",()=>{simulatedTakeover=false;syncControls();addMessage("Staff takeover simulation ended. You can continue testing the bot.","bot","Test console")});
+ $("staffReplyBtn").addEventListener("click",()=>addMessage("Thank you for your message. A member of our team will help you shortly.","staff","Sample staff reply · local only"));
+ setSession();syncControls();checkHealth();
+})();
+</script>
+</body>
+</html>
