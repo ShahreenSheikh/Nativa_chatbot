@@ -1381,11 +1381,11 @@ INSURANCE POLICY (FIXED — NEVER CONTRADICT): NativaCare services are NOT cover
 
 PRICING POLICY (AUTHORITATIVE):
 - The bookable home services are Antenatal Education & Preparation, Postnatal Recovery Support, Breastfeeding & Lactation Support, and Newborn Care Training.
-- Antenatal Education & Preparation, Postnatal Recovery Support, and Breastfeeding & Lactation Support each have several pricing options. Do not invent or guess starting prices or individual option prices. For detailed pricing for these three services, tell the client to call +971 56 473 0502 or email info@nativacare.com.
-- Newborn Care Training has two available options: private in-home training, 3 hours, AED 2,200 (choice of 5 topics); or group training, 3 hours, AED 1,900 per person. The Full Day option is NOT offered and must never be mentioned as available.
+- Starting prices: Antenatal Education & Preparation from AED 1,250; Postnatal Recovery Support from AED 800; Breastfeeding & Lactation Support from AED 350. Each has multiple options, so explain that the starting price depends on the selected option and direct clients to +971 56 473 0502 or info@nativacare.com for detailed pricing.
+- Newborn Care Training has two options: private in-home training, 3 hours, AED 2,200 (choice of 5 topics); or group training, 3 hours, AED 1,900 per person.
 - The Complete Journey package costs AED 6,800.
 - The Fourth Trimester package costs AED 5,200.
-- Use these exact prices when asked. Do not invent prices for other packages or services.
+- Use these exact prices when asked. Do not invent prices for other packages or services. Only discuss available services and options; do not mention unavailable options.
 
 STYLE:
 - Warm, supportive, factual. Use ONLY the CONTEXT below — do not invent prices, midwives, or services.
@@ -3549,24 +3549,24 @@ async def get_ai_response(session_id: str, user_message: str,
             reply = "The Fourth Trimester package is AED 5,200. For more information, please call +971 56 473 0502 or email info@nativacare.com."
         elif "nanny" in msg or "newborn care training" in msg:
             reply = (
-                "Newborn Care Training has two available options:\\n"
-                "• Private in-home training: 3 hours, AED 2,200 (choose 5 topics).\\n"
-                "• Group training: 3 hours, AED 1,900 per person.\\n"
-                "The Full Day option is not available. For details or to arrange training, "
-                "please call +971 56 473 0502 or email info@nativacare.com."
+                "Newborn Care Training is available in two formats:\\n"
+                "• Private in-home training — 3 hours, AED 2,200 (choose 5 topics).\\n"
+                "• Group training — 3 hours, AED 1,900 per person.\\n"
+                "To arrange a session, please call +971 56 473 0502 or email info@nativacare.com."
             )
         else:
             reply = (
-                "Our bookable home services are:\\n"
-                "• Antenatal Education & Preparation — multiple pricing options.\\n"
-                "• Postnatal Recovery Support — multiple pricing options.\\n"
-                "• Breastfeeding & Lactation Support — multiple pricing options.\\n"
+                "Our bookable home services are:\\n\\n"
+                "• Antenatal Education & Preparation — from AED 1,250 (multiple options).\\n"
+                "• Postnatal Recovery Support — from AED 800 (multiple options).\\n"
+                "• Breastfeeding & Lactation Support — from AED 350 (multiple options).\\n"
                 "• Newborn Care Training — private in-home training (3 hours, AED 2,200; "
                 "choice of 5 topics) or group training (3 hours, AED 1,900 per person).\\n\\n"
-                "For detailed pricing for the first three services, please call +971 56 473 0502 "
-                "or email info@nativacare.com. The Full Day Nanny Training option is not available.\\n\\n"
-                "Our packages are The Complete Journey (AED 6,800) and "
-                "The Fourth Trimester (AED 5,200)."
+                "For detailed pricing and help choosing an option for the first three services, "
+                "please call +971 56 473 0502 or email info@nativacare.com.\\n\\n"
+                "Our packages are:\\n"
+                "• The Complete Journey — AED 6,800.\\n"
+                "• The Fourth Trimester — AED 5,200."
             )
         append_history(session, user_message, reply)
         save_chat_log(session_id, user_message, reply)
