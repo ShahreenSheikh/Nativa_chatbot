@@ -120,9 +120,21 @@ def _select_flyers(user_message:str,reply:str):
         "nanny":("nanny","caregiver training","care giver training",
                  "newborn training", "newborn care training", "newborn care"),
     }
+    # An explicitly named service in the customer's message takes priority
+    # over other services that may appear in a broad assistant reply.
+    user_selected=[]
+    for key,words in groups.items():
+        if any(w in user for w in words):
+            user_selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
+    if user_selected:
+        return list(dict.fromkeys(user_selected))
+
+    # If no service was named by the customer, infer materials from the reply.
+    # This supports multi-service pricing answers without overriding a
+    # specific service request.
     selected=[]
     for key,words in groups.items():
-        if any(w in user or w in answer for w in words):
+        if any(w in answer for w in words):
             selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
     return list(dict.fromkeys(selected))
 
