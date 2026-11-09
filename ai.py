@@ -1381,7 +1381,7 @@ INSURANCE POLICY (FIXED — NEVER CONTRADICT): NativaCare services are NOT cover
 
 PRICING POLICY (AUTHORITATIVE):
 - The bookable home services are Antenatal Education & Preparation, Postnatal Recovery Support, Breastfeeding & Lactation Support, and Newborn Care Training.
-- Starting prices: Antenatal Education & Preparation from AED 1,250; Postnatal Recovery Support from AED 800; Breastfeeding & Lactation Support from AED 350. Each has multiple options, so explain that the starting price depends on the selected option and direct clients to +971 56 473 0502 or info@nativacare.com for detailed pricing.
+- Antenatal Education & Preparation, Postnatal Recovery Support, and Breastfeeding & Lactation Support each have multiple pricing options. Do not state or invent starting prices or individual option prices. Explain that several options are available and the relevant service pricing PDF provides the details.
 - Newborn Care Training has two options: private in-home training, 3 hours, AED 2,200 (choice of 5 topics); or group training, 3 hours, AED 1,900 per person.
 - The Complete Journey package costs AED 6,800.
 - The Fourth Trimester package costs AED 5,200.
@@ -3557,13 +3557,12 @@ async def get_ai_response(session_id: str, user_message: str,
         else:
             reply = (
                 "Our bookable home services are:\\n\\n"
-                "• Antenatal Education & Preparation — from AED 1,250 (multiple options).\\n"
-                "• Postnatal Recovery Support — from AED 800 (multiple options).\\n"
-                "• Breastfeeding & Lactation Support — from AED 350 (multiple options).\\n"
+                "• Antenatal Education & Preparation — multiple pricing options available.\\n"
+                "• Postnatal Recovery Support — multiple pricing options available.\\n"
+                "• Breastfeeding & Lactation Support — multiple pricing options available.\\n"
                 "• Newborn Care Training — private in-home training (3 hours, AED 2,200; "
                 "choice of 5 topics) or group training (3 hours, AED 1,900 per person).\\n\\n"
-                "For detailed pricing and help choosing an option for the first three services, "
-                "please call +971 56 473 0502 or email info@nativacare.com.\\n\\n"
+                "We’ll share the relevant service pricing PDF so you can review the available options.\\n\\n"
                 "Our packages are:\\n"
                 "• The Complete Journey — AED 6,800.\\n"
                 "• The Fourth Trimester — AED 5,200."
