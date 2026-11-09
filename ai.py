@@ -2417,8 +2417,8 @@ async def render_service_confirmation(service_id: str,
     if not svc:
         return f"Just to confirm — you'd like to book {service_name}? Reply 'yes' to continue or tell me what you'd prefer instead."
 
-    price = svc.get("default_price_aed", "?")
-    duration = svc.get("duration_minutes", "?")
+    price = str(svc.get("default_price_aed") or "").strip()
+    duration = str(svc.get("duration_minutes") or "").strip()
     loc_type = svc.get("location_type", "")
     loc_phrase = {
         "clinic": "at the clinic",
@@ -2429,9 +2429,9 @@ async def render_service_confirmation(service_id: str,
     }.get(loc_type, "")
     parts = [f"Just to confirm — you'd like to book the **{service_name}**"]
     detail_bits = []
-    if price != "?":
+    if price and price != "?":
         detail_bits.append(f"AED {price}")
-    if duration != "?":
+    if duration and duration != "?":
         detail_bits.append(f"{duration} min")
     if loc_phrase:
         detail_bits.append(loc_phrase)
@@ -3578,6 +3578,38 @@ async def get_ai_response(session_id: str, user_message: str,
     _DEBUG_BUFFER["intent"] = intent
     _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
     _DEBUG_BUFFER["corrections"] = list(understanding.get("corrections", []))
+
+    # Baby sleep concerns are not a request for Newborn Care Training.
+    # Training covers practical newborn-care skills, not sleep consultation.
+    # Do not let a symptom-based NLU guess start a booking unless the user
+    # explicitly names Newborn Care Training or nanny/caregiver training.
+    sleep_concern = bool(re.search(
+        r"\b(sleep|sleeping|sleeps|wake(?:s|ing)?\s+(?:up\s+)?at\s+night|"
+        r"up\s+all\s+night|settle\s+(?:him|her|them|my\s+baby)|"
+        r"night(?:-time|time)?\s+waking)\b",
+        user_message or "", re.IGNORECASE,
+    ))
+    explicit_training_request = bool(re.search(
+        r"\b(newborn\s+care\s+training|nanny\s+training|"
+        r"caregiver\s+training|prepare\s+(?:myself|yourself|my\s+nanny))\b",
+        user_message or "", re.IGNORECASE,
+    ))
+    if (sleep_concern and not explicit_training_request
+            and state == STATE_BROWSING
+            and not (session.get("candidate_service") or {}).get("service_id")
+            and not (session.get("lead") or {}).get("service_id")):
+        if new_slots.get("service_id") or intent in ("book", "pick_service"):
+            _debug_event(
+                "Sleep concern is not a Newborn Care Training booking request; "
+                "discarding inferred service and keeping the conversation informational."
+            )
+        new_slots.pop("service_id", None)
+        new_slots.pop("service_name", None)
+        intent = "general"
+        understanding["intent"] = "general"
+        understanding["slots"] = new_slots
+        _DEBUG_BUFFER["intent"] = "general"
+        _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
 
     # Universal "cancel / start over" — a real gap found in testing: only
     # 2 of the 8 booking-flow states (variant_picking, and one later
