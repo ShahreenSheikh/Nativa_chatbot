@@ -3541,28 +3541,47 @@ async def get_ai_response(session_id: str, user_message: str,
 
     if re.search(r"\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\b", user_message or "", re.IGNORECASE):
         msg = (user_message or "").lower()
+
+        # Resolve a short pricing follow-up against the service the bot
+        # just discussed. Do not dump the entire catalogue when the
+        # conversation is already focused on one service.
+        recent = session.get("last_recommended") or []
+        recent_names = []
+        for item in recent:
+            name = (item.get("service_name") or "").strip()
+            if name and name.lower() not in {n.lower() for n in recent_names}:
+                recent_names.append(name)
+        contextual_service = recent_names[0] if len(recent_names) == 1 else ""
+
         if "complete journey" in msg:
             reply = "The Complete Journey package is AED 6,800. For more information, please call +971 56 473 0502 or email info@nativacare.com."
         elif "fourth trimester" in msg:
             reply = "The Fourth Trimester package is AED 5,200. For more information, please call +971 56 473 0502 or email info@nativacare.com."
-        elif "nanny" in msg or "newborn care training" in msg:
+        elif "nanny" in msg or "newborn care training" in msg or "newborn care training" in contextual_service.lower():
             reply = (
-                "Newborn Care Training is available in two formats:\\n"
-                "• Private in-home training — 3 hours, AED 2,200 (choose 5 topics).\\n"
-                "• Group training — 3 hours, AED 1,900 per person.\\n"
+                "Newborn Care Training is available in two formats:\n"
+                "• Private in-home training — 3 hours, AED 2,200 (choose 5 topics).\n"
+                "• Group training — 3 hours, AED 1,900 per person.\n"
                 "To arrange a session, please call +971 56 473 0502 or email info@nativacare.com."
+            )
+        elif contextual_service:
+            reply = (
+                f"For {contextual_service}, there are multiple pricing options depending "
+                "on the level of support you choose. I can share the service's pricing "
+                "guide so you can compare the options. For detailed pricing, please call "
+                "+971 56 473 0502 or email info@nativacare.com."
             )
         else:
             reply = (
-                "Our bookable home services are:\\n\\n"
-                "• Antenatal Education & Preparation — multiple pricing options available.\\n"
-                "• Postnatal Recovery Support — multiple pricing options available.\\n"
-                "• Breastfeeding & Lactation Support — multiple pricing options available.\\n"
+                "Our bookable home services are:\n\n"
+                "• Antenatal Education & Preparation — multiple pricing options available.\n"
+                "• Postnatal Recovery Support — multiple pricing options available.\n"
+                "• Breastfeeding & Lactation Support — multiple pricing options available.\n"
                 "• Newborn Care Training — private in-home training (3 hours, AED 2,200; "
-                "choice of 5 topics) or group training (3 hours, AED 1,900 per person).\\n\\n"
-                "We’ll share the relevant service pricing PDF so you can review the available options.\\n\\n"
-                "Our packages are:\\n"
-                "• The Complete Journey — AED 6,800.\\n"
+                "choice of 5 topics) or group training (3 hours, AED 1,900 per person).\n\n"
+                "We can share the relevant service pricing guide.\n\n"
+                "Our packages are:\n"
+                "• The Complete Journey — AED 6,800.\n"
                 "• The Fourth Trimester — AED 5,200."
             )
         append_history(session, user_message, reply)
