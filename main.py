@@ -332,7 +332,7 @@ async def _handle_staff_echoes(payload: dict):
 async def _handle_customer_message(msg: dict):
     sender = msg.get("from", "")
     text = msg.get("text", "")
-    if not (sender and text):
+    if not sender:
         return
     if _seen_before(msg.get("id", "")):
         print(f"[WhatsApp] Duplicate delivery ignored ({_mask(sender)})")
@@ -340,6 +340,28 @@ async def _handle_customer_message(msg: dict):
     sid = "wa_" + sender
     lock = _SESSION_LOCKS.setdefault(sid, asyncio.Lock())
     async with lock:
+        # Payment screenshots sent directly in WhatsApp are not accepted as
+        # payment proof. Direct customers to the secure invoice upload page.
+        # Respect staff takeover: once a human is handling this chat, the bot
+        # must remain completely silent, including for image messages.
+        if msg.get("type") == "image":
+            try:
+                conversation = db.get_conversation(sid) or {}
+                if conversation.get("human_mode"):
+                    return
+            except Exception as e:
+                print(f"[WhatsApp] Could not check human mode for image from {_mask(sender)}: {e}")
+                return
+            fallback = (
+                "Thank you for sharing the screenshot! To ensure your payment "
+                "is recorded and reviewed by our team, please upload it using "
+                "the secure payment submission link we shared with you. "
+                "Payments and bookings are only confirmed after our team has reviewed them."
+            )
+            _remember_bot_message(await send_whatsapp_message(sender, fallback))
+            return
+        if not text:
+            return
         resolved = _resolve_numbered_service_choice(sid, text)
         result = await get_ai_response(sid, resolved, "whatsapp")
         reply = result.get("reply")
