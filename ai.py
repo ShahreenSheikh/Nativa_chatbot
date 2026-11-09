@@ -1606,7 +1606,12 @@ async def compose_reply(session: dict, user_message: str,
     # the LLM entirely for this one intent rather than continuing to rely
     # on prompt instructions the model didn't reliably follow.
     if understanding.get("intent") == "service_list":
-        return await render_service_browse_list()
+        # This deterministic path must update the same conversation context as
+        # the normal LLM path. Otherwise a later plural follow-up such as
+        # "how much do these cost?" can incorrectly inherit one stale service.
+        text = await render_service_browse_list()
+        await _record_recommended_services(session, text)
+        return text
 
     if not client:
         return ("I can help with services, prices, midwives, packages, "
@@ -3553,6 +3558,21 @@ async def get_ai_response(session_id: str, user_message: str,
             reply = "The Complete Journey package is AED 6,800. For more information, please call +971 56 473 0502 or email info@nativacare.com."
         elif "fourth trimester" in msg:
             reply = "The Fourth Trimester package is AED 5,200. For more information, please call +971 56 473 0502 or email info@nativacare.com."
+        # Explicit plural/multiple-service wording takes priority over any
+        # stale single-service context from an earlier turn.
+        elif re.search(r"\b(they|these|those|other services|all services|other ones)\b", msg):
+            reply = (
+                "The other home services each have several pricing options, depending on "
+                "the level of support you choose:\n"
+                "• Antenatal Education & Preparation — multiple options; see its pricing guide.\n"
+                "• Postnatal Recovery Support — multiple options; see its pricing guide.\n"
+                "• Breastfeeding & Lactation Support — multiple options; see its pricing guide.\n\n"
+                "Our packages are:\n"
+                "• The Complete Journey — AED 6,800.\n"
+                "• The Fourth Trimester — AED 5,200.\n\n"
+                "I can share the relevant pricing guides so you can compare the options. "
+                "For detailed pricing, call +971 56 473 0502 or email info@nativacare.com."
+            )
         elif any(term in msg for term in ("newborn care training", "nanny", "caregiver training")) or (
             len(recent_names) == 1 and "newborn care training" in recent_names[0].lower()
         ):
@@ -3562,7 +3582,7 @@ async def get_ai_response(session_id: str, user_message: str,
                 "• Group training — 3 hours, AED 1,900 per person.\n"
                 "To arrange a session, please call +971 56 473 0502 or email info@nativacare.com."
             )
-        elif len(recent_names) > 1 or re.search(r"\b(they|these|those|other services|all services)\b", msg):
+        elif len(recent_names) > 1:
             reply = (
                 "The other home services each have several pricing options, depending on "
                 "the level of support you choose:\n"
