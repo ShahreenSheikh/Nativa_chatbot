@@ -386,18 +386,30 @@ async def _handle_customer_message(msg: dict):
         reply = _normalize_language_prompt(reply)
         reply = _number_service_menu(sid, reply)
         greeting = _is_greeting(text)
-        # Flyers are informational attachments, not part of booking. Only
-        # send them while the customer is browsing (before a booking flow
-        # starts). The previous message-only matcher also matched service
-        # names inside booking prompts/replies, so it attached PDFs during
-        # service confirmation, variant selection, slot picking and details.
-        # Greetings should stay lightweight too — do not dump all four flyers.
+        # Send service material while browsing, and also whenever the bot
+        # actively recommends a service (even if the conversation state has
+        # already moved beyond browsing). Do not attach files to ordinary
+        # booking prompts that merely repeat a service name.
         state_after = result.get("state", "")
+        selected_material = _select_flyers(resolved, reply)
+        reply_lc = reply.lower()
+        recommendation_cues = (
+            "we can support you with", "we can help you with",
+            "we recommend", "i recommend", "we suggest",
+            "you may benefit from", "would be suitable for",
+            "could be helpful", "can help with", "we offer",
+        )
+        is_service_recommendation = bool(selected_material) and any(
+            cue in reply_lc for cue in recommendation_cues
+        )
         can_send_service_material = (
-            not greeting and state_after in ("browsing", "booked")
+            not greeting and (
+                state_after in ("browsing", "booked")
+                or is_service_recommendation
+            )
         )
         before_urls = (
-            _flyer_urls(sid, _select_flyers(resolved, reply), _SERVICE_FLYER_TTL)
+            _flyer_urls(sid, selected_material, _SERVICE_FLYER_TTL)
             if can_send_service_material else []
         )
         if before_urls:
