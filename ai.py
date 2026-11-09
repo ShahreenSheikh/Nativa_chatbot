@@ -417,76 +417,74 @@ def record_staff_reply(session_id: str, message: str):
 # ---------------------------------------------------------------------------
 
 async def _record_recommended_services(session: dict, reply_text: str):
-    """Scan the LLM's reply for service-name mentions and store them on
-    the session as `last_recommended`. Used by the book-intent handler
-    when the user says 'these' / 'them' / 'those' without naming a service.
+    """Remember a small set of services the assistant specifically
+    recommended, so a later "book it" can resume the right choice.
 
-    Also records mentioned packages under `last_mentioned_packages` so
-    that 'book it' after a package discussion is recognized as a
-    package-booking attempt (and routed to phone-redirect).
-
-    Checks FAMILY names (e.g. "Antenatal Preparation") as well as
-    individual service names (e.g. "Antenatal Preparation & Education")
-    — a real bug, not a hypothetical: once general-browsing replies
-    started using the short family name instead of a specific variant's
-    full name (see the "hide prices/tiers on first mention" change),
-    this function never matched anything for a family-grouped service at
-    all, since it only ever checked individual real service_name strings
-    as substrings. "book it" right after the bot described a family by
-    name then had nothing to resume, and fell through to the generic
-    full-menu prompt instead — which is exactly what a patient going
-    "postnatal recovery" -> "antenatal" -> "book it" would have hit."""
+    Family names take precedence over individual child names. A reply
+    mentioning "Newborn Care Training" can also contain a child service
+    title with those same words; recording both created duplicate choices
+    such as "Newborn Care Training or Newborn Care Training".
+    """
     if not reply_text:
         return
     services = await get_services()
     text_lc = reply_text.lower()
+
+    # First identify any service families explicitly mentioned. Record
+    # each family only once, using one real member ID so the normal
+    # family/category resolver can find its bookable option(s).
     mentioned = []
-    matched_families = set()
-    for s in services:
-        family = s.get("family_name") or ""
-        if family and family.lower() in text_lc and family not in matched_families:
-            matched_families.add(family)
+    mentioned_families = set()
+    for svc in services:
+        family = (svc.get("family_name") or "").strip()
+        if family and family.lower() in text_lc and family.lower() not in mentioned_families:
+            mentioned_families.add(family.lower())
             mentioned.append({
-                "service_id": s["service_id"],  # a real member of the family —
-                "service_name": family,          # good enough to resolve the family later
+                "service_id": svc["service_id"],
+                "service_name": family,
             })
+
+    # Only match individual service names when their family was NOT
+    # already captured above. Also deduplicate IDs and display names.
+    seen_ids = {item["service_id"] for item in mentioned}
+    seen_names = {item["service_name"].strip().lower() for item in mentioned}
+    for svc in services:
+        family = (svc.get("family_name") or "").strip()
+        if family and family.lower() in mentioned_families:
             continue
-        name = s.get("service_name", "")
-        if not name or len(name) < 4:
+        name = (svc.get("service_name") or "").strip()
+        service_id = svc.get("service_id")
+        if not name or len(name) < 4 or not service_id:
             continue
-        if name.lower() in text_lc:
+        if name.lower() in text_lc and service_id not in seen_ids and name.lower() not in seen_names:
             mentioned.append({
-                "service_id": s["service_id"],
+                "service_id": service_id,
                 "service_name": name,
             })
-    # Cap at 6 — anything more is a "we offer X services" list, not a
-    # focused recommendation. Drop entirely so we don't accidentally
-    # treat menu dumps as targeted recommendations.
+            seen_ids.add(service_id)
+            seen_names.add(name.lower())
+
+    # Cap at 6 — a broad menu dump is not a focused recommendation.
     if 1 <= len(mentioned) <= 6:
         session["last_recommended"] = mentioned
         _debug_event(f"Recorded {len(mentioned)} recommended services from reply")
     else:
-        # Clear stale recommendations if this turn didn't focus on a few
         session.pop("last_recommended", None)
 
-    # Track mentioned packages
+    # Track mentioned packages separately for package-booking redirects.
     try:
         packages = await get_packages()
     except Exception:
         packages = []
     pkg_mentions = []
-    for p in packages:
-        name = p.get("package_name", "")
-        if not name or len(name) < 4:
-            continue
-        if name.lower() in text_lc:
+    for package in packages:
+        name = package.get("package_name", "")
+        if name and len(name) >= 4 and name.lower() in text_lc:
             pkg_mentions.append(name)
     if 1 <= len(pkg_mentions) <= 3:
-        # Few packages mentioned — likely focused discussion. Useful signal.
         session["last_mentioned_packages"] = pkg_mentions
         _debug_event(f"Recorded {len(pkg_mentions)} mentioned packages from reply")
     else:
-        # Many packages = a list dump, not a focused mention
         session.pop("last_mentioned_packages", None)
 
 
