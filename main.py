@@ -114,7 +114,7 @@ def _select_flyers(user_message:str,reply:str):
         "postnatal":("postnatal","postpartum","after birth","recovery support",
                      "new mother recovery"),
         "nanny":("nanny","caregiver training","care giver training",
-                 "newborn training"),
+                 "newborn training", "newborn care training", "newborn care"),
     }
     selected=[]
     for key,words in groups.items():
