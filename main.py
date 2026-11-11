@@ -161,7 +161,18 @@ async def chat(req:ChatRequest):
         result["session_id"]=req.session_id
         result["reply"]=_normalize_language_prompt(result.get("reply",""))
         result["reply"]=_number_service_menu(req.session_id,result.get("reply",""))
-        # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        result["flyers"]=_select_flyers(resolved,result.get("reply",""))
+        # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        # Keep simulator previews consistent with WhatsApp: the same PDF
+        # is shown only once per session in any 15-minute window.
+        flyer_paths = _select_flyers(resolved,result.get("reply",""))
+        sent = _FLYERS_SENT.setdefault(req.session_id, {})
+        now = time.time()
+        result["flyers"] = []
+        for path in flyer_paths:
+            if path.lower().endswith(".pdf") and now - sent.get(path, 0) < _PDF_RESEND_TTL:
+                continue
+            result["flyers"].append(path)
+            if path.lower().endswith(".pdf"):
+                sent[path] = now
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
 @app.get("/chat/{session_id}/poll",include_in_schema=False)
@@ -249,7 +260,8 @@ _PUBLIC_BASE = (os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") o
 _GREETING_WORDS = {"hi", "hii", "hey", "hiya", "hello", "salam", "assalamualaikum",
                    "assalamu alaikum", "good morning", "good afternoon", "good evening"}
 _GREETING_FLYER_TTL = 24 * 3600   # flyers 1-4 are sent once per customer per day with the greeting
-_SERVICE_FLYER_TTL = 0             # attach service material on every relevant service mention
+_SERVICE_FLYER_TTL = 0             # image flyers may be resent on a relevant mention
+_PDF_RESEND_TTL = 15 * 60           # do not resend the same PDF to a customer within 15 minutes
 _SEEN_MSG_IDS: dict = {}          # webhook message id -> time (duplicate guard)
 _BOT_MSG_IDS: dict = {}           # ids of messages the BOT sent (never treated as staff)
 _FLYERS_SENT: dict = {}           # session id -> {flyer path: time sent}
@@ -291,7 +303,10 @@ def _flyer_urls(session_id: str, paths: list, ttl: float) -> list:
     now = time.time()
     urls = []
     for p in paths:
-        if now - sent.get(p, 0) < ttl:
+        # PDFs have a per-customer 15-minute cooldown. Keep the existing
+        # image-flyer behavior controlled by the caller's ttl.
+        effective_ttl = _PDF_RESEND_TTL if p.lower().endswith(".pdf") else ttl
+        if now - sent.get(p, 0) < effective_ttl:
             continue
         sent[p] = now
         urls.append(_PUBLIC_BASE + p)
@@ -398,6 +413,8 @@ async def _handle_customer_message(msg: dict):
             "we recommend", "i recommend", "we suggest",
             "you may benefit from", "would be suitable for",
             "could be helpful", "can help with", "we offer",
+            "would you like to book", "you'd like to book",
+            "you would like to book", "book the ",
         )
         is_service_recommendation = bool(selected_material) and any(
             cue in reply_lc for cue in recommendation_cues
