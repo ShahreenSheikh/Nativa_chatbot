@@ -3553,6 +3553,29 @@ async def get_ai_response(session_id: str, user_message: str,
             if name and name.lower() not in {n.lower() for n in recent_names}:
                 recent_names.append(name)
 
+        # Resolve singular price follow-ups from the immediately preceding
+        # assistant message, even when a recommendation did not populate
+        # last_recommended (for example, a symptom-led booking suggestion).
+        previous_assistant = next(
+            (str(turn.get("content") or "").lower()
+             for turn in reversed(session.get("history", []))
+             if turn.get("role") == "assistant"),
+            ""
+        )
+        singular_followup = bool(re.search(r"\\b(it|that|this|the service)\\b", msg))
+        previous_service = None
+        if singular_followup:
+            service_phrases = (
+                ("newborn care training", "newborn care training", "newborn care"),
+                ("breastfeeding & lactation support", "breastfeeding", "lactation"),
+                ("antenatal education & preparation", "antenatal", "prenatal"),
+                ("postnatal recovery support", "postnatal", "postpartum"),
+            )
+            for service_name, *phrases in service_phrases:
+                if any(phrase in previous_assistant for phrase in phrases):
+                    previous_service = service_name
+                    break
+
         # Explicitly named topics always win over conversational context.
         if "complete journey" in msg:
             reply = "The Complete Journey package is AED 6,800. For more information, please call +971 56 473 0502 or email info@nativacare.com."
@@ -3573,8 +3596,10 @@ async def get_ai_response(session_id: str, user_message: str,
                 "I can share the relevant pricing guides so you can compare the options. "
                 "For detailed pricing, call +971 56 473 0502 or email info@nativacare.com."
             )
-        elif any(term in msg for term in ("newborn care training", "nanny", "caregiver training")) or (
-            len(recent_names) == 1 and "newborn care training" in recent_names[0].lower()
+        elif (
+            any(term in msg for term in ("newborn care training", "nanny", "caregiver training"))
+            or (len(recent_names) == 1 and "newborn care training" in recent_names[0].lower())
+            or previous_service == "newborn care training"
         ):
             reply = (
                 "Newborn Care Training is available in two formats:\n"
@@ -3594,6 +3619,17 @@ async def get_ai_response(session_id: str, user_message: str,
                 "• The Fourth Trimester — AED 5,200.\n\n"
                 "I can share the relevant pricing guides so you can compare the options. "
                 "For detailed pricing, call +971 56 473 0502 or email info@nativacare.com."
+            )
+        elif previous_service in (
+            "breastfeeding & lactation support",
+            "antenatal education & preparation",
+            "postnatal recovery support",
+        ):
+            reply = (
+                f"For {previous_service}, there are several pricing options "
+                "depending on the level of support you choose. I'll share its "
+                "pricing guide so you can compare the options. For detailed "
+                "pricing, please call +971 56 473 0502 or email info@nativacare.com."
             )
         elif len(recent_names) == 1:
             reply = (
