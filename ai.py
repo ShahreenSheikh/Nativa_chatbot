@@ -3687,19 +3687,16 @@ async def get_ai_response(session_id: str, user_message: str,
 
     # --- LLM Call 1: Understand ---
     understanding = await understand(session, user_message)
-    intent = understanding["intent"]
-    new_slots = understanding["slots"]
-    _DEBUG_BUFFER["intent"] = intent
-    _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
-    _DEBUG_BUFFER["corrections"] = list(understanding.get("corrections", []))
 
-    # Baby sleep concerns are not a request for Newborn Care Training.
-    # Training covers practical newborn-care skills, not sleep consultation.
-    # Do not let a symptom-based NLU guess start a booking unless the user
-    # explicitly names Newborn Care Training or nanny/caregiver training.
+    # Global deterministic override for sleep-only concerns. Run this BEFORE
+    # state dispatch so an NLU guess or a service-confirmation branch cannot
+    # prepend an unrelated recommendation (especially breastfeeding support).
+    # Preserve any active booking state; this turn is informational only.
     sleep_concern = bool(re.search(
         r"\b(sleep|sleeping|sleeps|wake(?:s|ing)?\s+(?:up\s+)?at\s+night|"
-        r"up\s+all\s+night|settle\s+(?:him|her|them|my\s+baby)|"
+        r"up\s+all\s+night|trouble\s+sleeping|won't\s+sleep|"
+        r"cannot\s+sleep|can't\s+sleep|sleep\s+(?:problem|issue)|"
+        r"bedtime|settle\s+(?:him|her|them|my\s+baby)|"
         r"night(?:-time|time)?\s+waking)\b",
         user_message or "", re.IGNORECASE,
     ))
@@ -3708,22 +3705,46 @@ async def get_ai_response(session_id: str, user_message: str,
         r"caregiver\s+training|prepare\s+(?:myself|yourself|my\s+nanny))\b",
         user_message or "", re.IGNORECASE,
     ))
+    explicit_feeding_problem = bool(re.search(
+        r"\b(latch(?:ing)?|breastfeed(?:ing)?|milk\s+supply|"
+        r"low\s+milk|feeding\s+difficulty|feeding\s+problem|"
+        r"baby\s+(?:won't|will not)\s+(?:feed|latch))\b",
+        user_message or "", re.IGNORECASE,
+    ))
     if (sleep_concern and not explicit_training_request
+            and not explicit_feeding_problem):
+        reply = (
+            "I'm sorry your baby is having trouble sleeping. A calm, consistent "
+            "bedtime routine may help. For every sleep, place your baby on their "
+            "back on a firm, flat, clear sleep surface, without pillows, loose "
+            "blankets or soft toys.\n\n"
+            "Our **Newborn Care Training** service covers safe-sleep practices, "
+            "soothing techniques, sleep routines and understanding newborn cues. "
+            "If you'd like to know more about this service, just let me know."
+        )
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
+    intent = understanding["intent"]
+    new_slots = understanding["slots"]
+    _DEBUG_BUFFER["intent"] = intent
+    _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
+    _DEBUG_BUFFER["corrections"] = list(understanding.get("corrections", []))
+
+    # Do not let sleep-only symptoms be interpreted as a booking request.
+    # The global override above handles sleep-only questions. This guard is
+    # retained for mixed messages that explicitly mention a feeding issue.
+    if (sleep_concern and explicit_feeding_problem
+            and not explicit_training_request
             and state == STATE_BROWSING
             and not (session.get("candidate_service") or {}).get("service_id")
             and not (session.get("lead") or {}).get("service_id")):
         if new_slots.get("service_id") or intent in ("book", "pick_service"):
             _debug_event(
-                "Sleep concern is not a Newborn Care Training booking request; "
-                "discarding inferred service and keeping the conversation informational."
+                "Mixed sleep/feeding concern: preventing sleep wording from "
+                "creating a Newborn Care Training booking."
             )
-        new_slots.pop("service_id", None)
-        new_slots.pop("service_name", None)
-        intent = "general"
-        understanding["intent"] = "general"
-        understanding["slots"] = new_slots
-        _DEBUG_BUFFER["intent"] = "general"
-        _DEBUG_BUFFER["extracted_slots"] = dict(new_slots)
 
     # Universal "cancel / start over" — a real gap found in testing: only
     # 2 of the 8 booking-flow states (variant_picking, and one later
