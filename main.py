@@ -94,49 +94,61 @@ def _number_service_menu(session_id:str,reply:str):
         return "\n".join(out)
     return text
 
-def _select_flyers(user_message:str,reply:str):
-    """Choose service material for every service-related reply.
+def _select_flyers(user_message:str,reply:str,state_after:str="",service_name:str=""):
+    """Return only the selected service's information flyer or pricing PDF.
 
-    Broad service-list requests receive the four information flyers only.
-    A specific service mention receives its information flyer followed by
-    that service's pricing/details PDF. Match both the customer's message
-    and the generated reply so a service mentioned by the bot is not missed.
+    Service catalogues are text-only. A customer selection sends the
+    information image; a specific pricing question sends only its PDF.
+    Never infer a selection merely because the assistant listed services.
     """
     user=(user_message or "").lower()
     answer=(reply or "").lower()
-    broad=("all services","all your services","what services","which services",
-           "services do you offer","services you offer","other services",
-           "what other services","show me all","everything you offer")
-    if any(p in user for p in broad):
-        return list(_ALL_FLYERS)
-
     groups={
         "breastfeeding":("breastfeeding","breastfeed","latch","latching","lactation",
-                         "colostrum","milk supply","nursing"),
+                         "colostrum","milk supply"),
         "antenatal":("antenatal","prenatal","pregnancy preparation",
                      "birth preparation","childbirth education"),
         "postnatal":("postnatal","postpartum","after birth","recovery support",
                      "new mother recovery"),
-        "nanny":("nanny","caregiver training","care giver training",
-                 "newborn training", "newborn care training", "newborn care"),
+        "nanny":("nanny training","caregiver training","care giver training",
+                 "newborn training","newborn care training"),
     }
-    # An explicitly named service in the customer's message takes priority
-    # over other services that may appear in a broad assistant reply.
-    user_selected=[]
-    for key,words in groups.items():
-        if any(w in user for w in words):
-            user_selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
-    if user_selected:
-        return list(dict.fromkeys(user_selected))
+    price_question=bool(re.search(
+        r"\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\b", user
+    ))
+    broad=("all services","all your services","what services","which services",
+           "services do you offer","services you offer","other services",
+           "what other services","show me all","everything you offer")
+    if any(p in user for p in broad):
+        return []
 
-    # If no service was named by the customer, infer materials from the reply.
-    # This supports multi-service pricing answers without overriding a
-    # specific service request.
     selected=[]
     for key,words in groups.items():
-        if any(w in answer for w in words):
-            selected.extend((_SERVICE_FLYERS[key],_SERVICE_PRICE_PDFS[key]))
-    return list(dict.fromkeys(selected))
+        if any(w in user for w in words):
+            selected.append(key)
+
+    # Resolve pronoun follow-ups only when the current response identifies
+    # exactly one service (e.g. "how much would it cost?" after selection).
+    if not selected and service_name:
+        service_lc=str(service_name).lower()
+        for key,words in groups.items():
+            if any(w in service_lc for w in words):
+                selected.append(key)
+    if not selected and (price_question or re.fullmatch(
+        r"\s*(yes|yeah|yep|sure|okay|ok|that's the one|that one|i want that)\s*[.!]?\s*",
+        user
+    )):
+        for key,words in groups.items():
+            if any(w in answer for w in words):
+                selected.append(key)
+
+    # Do not send a batch when the reply mentions multiple services.
+    if len(selected) != 1:
+        return []
+    key=selected[0]
+    if price_question:
+        return [_SERVICE_PRICE_PDFS[key]]
+    return [_SERVICE_FLYERS[key]]
 
 def _normalize_language_prompt(reply):
     if "In which language would you like your session?" not in (reply or ""):return reply
@@ -163,16 +175,15 @@ async def chat(req:ChatRequest):
         result["reply"]=_number_service_menu(req.session_id,result.get("reply",""))
         # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        # Keep simulator previews consistent with WhatsApp: the same PDF
         # is shown only once per session in any 15-minute window.
-        flyer_paths = _select_flyers(resolved,result.get("reply",""))
+        flyer_paths = _select_flyers(resolved,result.get("reply",""),result.get("state",""),result.get("service_name") or "")
         sent = _FLYERS_SENT.setdefault(req.session_id, {})
         now = time.time()
         result["flyers"] = []
         for path in flyer_paths:
-            if path.lower().endswith(".pdf") and now - sent.get(path, 0) < _PDF_RESEND_TTL:
+            if now - sent.get(path, 0) < _PDF_RESEND_TTL:
                 continue
             result["flyers"].append(path)
-            if path.lower().endswith(".pdf"):
-                sent[path] = now
+            sent[path] = now
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
 @app.get("/chat/{session_id}/poll",include_in_schema=False)
@@ -260,7 +271,7 @@ _PUBLIC_BASE = (os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") o
 _GREETING_WORDS = {"hi", "hii", "hey", "hiya", "hello", "salam", "assalamualaikum",
                    "assalamu alaikum", "good morning", "good afternoon", "good evening"}
 _GREETING_FLYER_TTL = 24 * 3600   # flyers 1-4 are sent once per customer per day with the greeting
-_SERVICE_FLYER_TTL = 0             # image flyers may be resent on a relevant mention
+_SERVICE_FLYER_TTL = 15 * 60        # each information flyer has a per-customer 15-minute cooldown
 _PDF_RESEND_TTL = 15 * 60           # do not resend the same PDF to a customer within 15 minutes
 _SEEN_MSG_IDS: dict = {}          # webhook message id -> time (duplicate guard)
 _BOT_MSG_IDS: dict = {}           # ids of messages the BOT sent (never treated as staff)
@@ -303,9 +314,9 @@ def _flyer_urls(session_id: str, paths: list, ttl: float) -> list:
     now = time.time()
     urls = []
     for p in paths:
-        # PDFs have a per-customer 15-minute cooldown. Keep the existing
-        # image-flyer behavior controlled by the caller's ttl.
-        effective_ttl = _PDF_RESEND_TTL if p.lower().endswith(".pdf") else ttl
+        # Every individual flyer and pricing PDF has its own per-customer
+        # 15-minute cooldown, independent of the other service materials.
+        effective_ttl = _PDF_RESEND_TTL
         if now - sent.get(p, 0) < effective_ttl:
             continue
         sent[p] = now
@@ -401,33 +412,16 @@ async def _handle_customer_message(msg: dict):
         reply = _normalize_language_prompt(reply)
         reply = _number_service_menu(sid, reply)
         greeting = _is_greeting(text)
-        # Send service material while browsing, and also whenever the bot
-        # actively recommends a service (even if the conversation state has
-        # already moved beyond browsing). Do not attach files to ordinary
-        # booking prompts that merely repeat a service name.
+        # Service catalogues and recommendations are text-only. Attach a
+        # single service flyer only after the customer selects that service;
+        # attach its pricing PDF only when they ask about its price.
         state_after = result.get("state", "")
-        selected_material = _select_flyers(resolved, reply)
-        reply_lc = reply.lower()
-        recommendation_cues = (
-            "we can support you with", "we can help you with",
-            "we recommend", "i recommend", "we suggest",
-            "you may benefit from", "would be suitable for",
-            "could be helpful", "can help with", "we offer",
-            "would you like to book", "you'd like to book",
-            "you would like to book", "book the ",
-        )
-        is_service_recommendation = bool(selected_material) and any(
-            cue in reply_lc for cue in recommendation_cues
-        )
-        can_send_service_material = (
-            not greeting and (
-                state_after in ("browsing", "booked")
-                or is_service_recommendation
-            )
+        selected_material = _select_flyers(
+            resolved, reply, state_after, result.get("service_name") or ""
         )
         before_urls = (
             _flyer_urls(sid, selected_material, _SERVICE_FLYER_TTL)
-            if can_send_service_material else []
+            if not greeting else []
         )
         if before_urls:
             await _send_flyers(sender, before_urls)
