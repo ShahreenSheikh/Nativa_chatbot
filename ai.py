@@ -956,6 +956,7 @@ PACKAGES:
 
 Rules:
 - Be lenient with typos.
+- SERVICE MATCHING: A baby having difficulty sleeping, waking frequently, or needing help with settling/routines maps to Newborn Care Training, NOT Breastfeeding & Lactation Support. Breastfeeding support is for explicit feeding/latch/milk-supply concerns. Do not recommend breastfeeding support for a sleep-only concern.
 - Today's date is {today}. "tomorrow" = next day. Resolve relative dates to YYYY-MM-DD.
 - A user typing just a time like "10am" or "14:30" while we're showing slots is "pick_slot".
 - A user typing just a service name with no clear intent is "pick_service" if a service catalog was offered, else "general".
@@ -1601,6 +1602,38 @@ async def _build_compose_context(intent: str, slots: dict,
 async def compose_reply(session: dict, user_message: str,
                         understanding: dict) -> str:
     """LLM call 2 — friendly reply using targeted DB slice."""
+    # Deterministic routing for baby sleep concerns. Sleep difficulties are
+    # a Newborn Care Training topic, not a breastfeeding/lactation problem.
+    # Keep this ahead of the LLM compose call so the model cannot cross-sell
+    # an unrelated service or invent a booking prompt.
+    sleep_concern = bool(re.search(
+        r"\b(sleep|sleeping|sleeps|wake(?:s|ing)?\s+(?:up\s+)?at\s+night|"
+        r"up\s+all\s+night|night(?:-time|time)?\s+waking|"
+        r"trouble\s+sleeping|hard\s+to\s+settle)\b",
+        user_message or "", re.IGNORECASE,
+    ))
+    explicit_training_request = bool(re.search(
+        r"\b(newborn\s+care\s+training|nanny\s+training|"
+        r"caregiver\s+training)\b",
+        user_message or "", re.IGNORECASE,
+    ))
+    explicit_feeding_problem = bool(re.search(
+        r"\b(latch(?:ing)?|breastfeed(?:ing)?|milk\s+supply|"
+        r"low\s+milk|feeding\s+difficulty|feeding\s+problem)\b",
+        user_message or "", re.IGNORECASE,
+    ))
+    if sleep_concern and not explicit_training_request and not explicit_feeding_problem:
+        return (
+            "I'm sorry your baby is having trouble sleeping. A calm, consistent "
+            "bedtime routine may help. For every sleep, place your baby on their "
+            "back on a firm, flat, clear sleep surface, without pillows, loose "
+            "blankets or soft toys.\n\n"
+            "The relevant NativaCare service is **Newborn Care Training**. It "
+            "covers safe-sleep practices, soothing techniques, sleep routines "
+            "and understanding newborn cues. If you'd like to know more or "
+            "choose this service, just let me know."
+        )
+
     # Deterministic fast-path for "what services do you offer" specifically
     # — see render_service_browse_list()'s docstring for why this bypasses
     # the LLM entirely for this one intent rather than continuing to rely
