@@ -1386,9 +1386,14 @@ PRICING POLICY (AUTHORITATIVE):
 - The Fourth Trimester package costs AED 5,200.
 - Use these exact prices when asked. Do not invent prices for other packages or services. Only discuss available services and options; do not mention unavailable options.
 
-STYLE:
-- Warm, supportive, factual. Use ONLY the CONTEXT below — do not invent prices, midwives, or services.
-- If a question can't be answered from CONTEXT, say so and offer to help with bookings.
+STYLE AND SALES POLICY (STRICT):
+- Warm, professional, concise, and service-focused. The purpose of this chatbot is to explain and sell NativaCare's paid services and guide customers to book.
+- Do NOT give free tips, home remedies, routines, exercises, feeding instructions, sleep advice, care instructions, or step-by-step recommendations.
+- If a customer describes a concern, briefly acknowledge it, identify the relevant NativaCare service using the CONTEXT, explain in one short sentence how that service is relevant, and invite them to enquire about or book that service.
+- Do not answer a request for tips with tips. Redirect it to the relevant paid service.
+- Do not give clinical advice or make promises about outcomes. For emergencies, use the emergency instruction above; for individual medical advice, direct the customer to a qualified clinician.
+- Use ONLY the CONTEXT below — do not invent prices, midwives, services, or service inclusions.
+- If the concern does not match a listed service, say which NativaCare service may be relevant only when supported by CONTEXT, otherwise provide the clinic contact details.
 
 PHRASING:
 - When the user asks about timings, availability, schedules, or "when" — say you can show real available slots once they pick a service or class. Do NOT deflect to the phone for booking timings. Example: "I can show available slots once we pick a service — reply 'book Hypnobirthing' (or whichever) and I'll show times."
@@ -1624,14 +1629,10 @@ async def compose_reply(session: dict, user_message: str,
     ))
     if sleep_concern and not explicit_training_request and not explicit_feeding_problem:
         return (
-            "I'm sorry your baby is having trouble sleeping. A calm, consistent "
-            "bedtime routine may help. For every sleep, place your baby on their "
-            "back on a firm, flat, clear sleep surface, without pillows, loose "
-            "blankets or soft toys.\n\n"
-            "The relevant NativaCare service is **Newborn Care Training**. It "
-            "covers safe-sleep practices, soothing techniques, sleep routines "
-            "and understanding newborn cues. If you'd like to know more or "
-            "choose this service, just let me know."
+            "I'm sorry to hear your baby is having difficulty sleeping. "
+            "Our **Newborn Care Training** service includes guidance on newborn "
+            "sleep and settling. Would you like information about this service "
+            "or to book a session?"
         )
 
     # Deterministic fast-path for "what services do you offer" specifically
@@ -1670,13 +1671,9 @@ async def compose_reply(session: dict, user_message: str,
             model=GROQ_MODEL,
             messages=messages,
             temperature=0.3,
-            # max_tokens raised from 320 to 600 because GPT OSS 120B sometimes
-            # uses tokens for internal scaffolding before user-visible output.
-            # 320 was producing truncated lists ("Vaginal Birth After Cesarean
-            # Workshop - 120 min (clinic)" with no price) and occasionally
-            # empty replies entirely when the model hit the limit during
-            # reasoning. 600 is still bounded but gives more headroom.
-            max_tokens=600,
+            # Allow sufficient output budget so the model does not cut off
+            # customer-facing replies mid-sentence.
+            max_tokens=1200,
         )
         raw_content = (resp.choices[0].message.content or "").strip()
         # GPT OSS 120B occasionally returns empty content (especially under
@@ -1693,7 +1690,9 @@ async def compose_reply(session: dict, user_message: str,
                 f"LLM returned empty content (finish_reason={finish_reason!r}). "
                 f"Likely max_tokens was hit during model reasoning."
             )
-        text = shorten(raw_content, max_words=180)
+        # Do not word-truncate customer-facing replies: that can cut a sentence
+        # or leave a message visibly incomplete. The prompt already controls length.
+        text = raw_content
         elapsed = int((_time.perf_counter() - t0) * 1000)
         _debug_log_llm(
             step="compose",
@@ -3714,13 +3713,10 @@ async def get_ai_response(session_id: str, user_message: str,
     if (sleep_concern and not explicit_training_request
             and not explicit_feeding_problem):
         reply = (
-            "I'm sorry your baby is having trouble sleeping. A calm, consistent "
-            "bedtime routine may help. For every sleep, place your baby on their "
-            "back on a firm, flat, clear sleep surface, without pillows, loose "
-            "blankets or soft toys.\n\n"
-            "Our **Newborn Care Training** service covers safe-sleep practices, "
-            "soothing techniques, sleep routines and understanding newborn cues. "
-            "If you'd like to know more about this service, just let me know."
+            "I'm sorry to hear your baby is having difficulty sleeping. "
+            "Our **Newborn Care Training** service includes guidance on newborn "
+            "sleep and settling. Would you like information about this service "
+            "or to book a session?"
         )
         append_history(session, user_message, reply)
         save_chat_log(session_id, user_message, reply)
