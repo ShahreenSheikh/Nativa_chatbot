@@ -176,6 +176,10 @@ async def chat(req:ChatRequest):
         # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        # Keep simulator previews consistent with WhatsApp: the same PDF
         # is shown only once per session in any 15-minute window.
         flyer_paths = _select_flyers(resolved,result.get("reply",""),result.get("state",""),result.get("service_name") or "")
+        # When a pricing PDF is attached, it is the entire pricing response.
+        # Do not also display/send a separate pricing text message.
+        if any(str(path).lower().endswith(".pdf") for path in flyer_paths):
+            result["reply"] = ""
         sent = _FLYERS_SENT.setdefault(req.session_id, {})
         now = time.time()
         result["flyers"] = []
@@ -328,7 +332,8 @@ async def _send_flyers(to: str, urls: list):
     for u in urls:
         if u.lower().endswith(".pdf"):
             filename = Path(u.split("?", 1)[0]).name
-            r = await send_whatsapp_document(to, u, filename=filename, caption="Service information and pricing")
+            # The PDF itself is the complete pricing response; no caption.
+            r = await send_whatsapp_document(to, u, filename=filename, caption="")
         else:
             r = await send_whatsapp_image(to, u)
         if r.get("status") != "sent":
@@ -425,6 +430,9 @@ async def _handle_customer_message(msg: dict):
         )
         if before_urls:
             await _send_flyers(sender, before_urls)
+        # A pricing PDF is sent by itself, without a duplicate pricing text.
+        if any(str(path).lower().endswith(".pdf") for path in selected_material):
+            return
         _remember_bot_message(await send_whatsapp_message(sender, reply))
 
 
