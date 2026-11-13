@@ -176,10 +176,6 @@ async def chat(req:ChatRequest):
         # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        # Keep simulator previews consistent with WhatsApp: the same PDF
         # is shown only once per session in any 15-minute window.
         flyer_paths = _select_flyers(resolved,result.get("reply",""),result.get("state",""),result.get("service_name") or "")
-        # When a pricing PDF is attached, it is the entire pricing response.
-        # Do not also display/send a separate pricing text message.
-        if any(str(path).lower().endswith(".pdf") for path in flyer_paths):
-            result["reply"] = ""
         sent = _FLYERS_SENT.setdefault(req.session_id, {})
         now = time.time()
         result["flyers"] = []
@@ -188,6 +184,12 @@ async def chat(req:ChatRequest):
                 continue
             result["flyers"].append(path)
             sent[path] = now
+        # Match WhatsApp exactly: suppress the separate pricing text only
+        # when a pricing PDF is actually included in this response. If the
+        # 15-minute attachment cooldown prevents sending it, keep the text
+        # fallback rather than returning an empty simulator reply.
+        if any(str(path).lower().endswith(".pdf") for path in result["flyers"]):
+            result["reply"] = ""
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
 @app.get("/chat/{session_id}/poll",include_in_schema=False)
@@ -430,8 +432,10 @@ async def _handle_customer_message(msg: dict):
         )
         if before_urls:
             await _send_flyers(sender, before_urls)
-        # A pricing PDF is sent by itself, without a duplicate pricing text.
-        if any(str(path).lower().endswith(".pdf") for path in selected_material):
+        # Match the simulator: suppress pricing text only when a pricing PDF
+        # was actually sent. If the 15-minute cooldown blocks the PDF, retain
+        # the normal text fallback.
+        if before_urls and any(str(url).lower().endswith(".pdf") for url in before_urls):
             return
         _remember_bot_message(await send_whatsapp_message(sender, reply))
 
