@@ -382,12 +382,22 @@ def valid(value) -> bool:
 
 
 def get_recent_service_name(session_id: str) -> str:
-    """Return the single recently discussed service for follow-up routing."""
+    """Return the service discussed in the latest assistant turn."""
     session = _sessions.get(session_id) or {}
     recent = session.get("last_recommended") or []
     if len(recent) == 1:
         return str(recent[0].get("service_name") or "")
-    return ""
+    history = session.get("history") or []
+    latest = next((str(item.get("content") or "") for item in reversed(history)
+                   if item.get("role") == "assistant" and item.get("content")), "").lower()
+    if not latest:
+        return ""
+    families = ("Breastfeeding & Lactation Support", "Antenatal Education & Preparation",
+                "Postnatal Recovery Support", "Newborn Care Training")
+    matches = [name for name in families if name.lower() in latest]
+    broad = any(term in latest for term in ("all nativacare services", "we offer four",
+                  "our services include", "here are our services"))
+    return matches[0] if len(matches) == 1 and not broad else ""
 
 
 def cleanup_old_sessions():
