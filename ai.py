@@ -1898,44 +1898,36 @@ def llm_error_reply(session: dict, err: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 async def render_variant_choice(family_name: str, variants: list) -> str:
-    """Shown when a picked service turns out to have multiple tiers (half
-    day/full day, single visit/3-visit program, etc.) — lists the actual
-    options with their real prices/durations AND a short description so
-    the user can actually tell what they're choosing between, not just
-    see a bare price/duration line, before moving into the normal
-    single-service confirmation flow.
+    """Give a service-focused introduction during an enquiry.
 
-    Uses the full service_name (e.g. "Nanny Training (Half Day)") as the
-    display label rather than the bare variant_label ("Half Day") — the
-    bare label reads as ambiguous on its own once it's separated from the
-    "Nanny Training has a few options:" header above it. variant_label
-    is still what the matching logic in the state handler keys off of;
-    this only changes what's SHOWN."""
-    lines = [f"{family_name} has a few options:\n"]
-    for v in variants:
-        label = v.get("service_name") or v.get("variant_label", "")
-        price = v.get("default_price_aed", "?")
-        duration = v.get("duration_minutes", "")
-        visits = v.get("visits_required", "")
-        extra = f", {visits} visits" if visits and str(visits) not in ("", "1") else ""
-        duration_str = f", {duration} min" if duration else ""
-        lines.append(f"• {label} — AED {price}{duration_str}{extra}")
-
-        desc = (v.get("short_desc") or v.get("description") or "").strip()
+    Never expose booking variants, tiers, prices, visit counts, or durations
+    merely because the catalog contains multiple bookable rows. Those details
+    are not part of a normal service enquiry.
+    """
+    descriptions = []
+    for variant in variants:
+        desc = (variant.get("family_description")
+                or variant.get("category_description")
+                or variant.get("short_desc")
+                or variant.get("description") or "").strip()
         if desc:
-            # Keep it to roughly one sentence — this is a quick comparison
-            # view, not the full service description (that's already
-            # shown later, in render_service_confirmation, once a
-            # specific variant is picked).
-            first_sentence = desc.split(". ")[0].rstrip(".") + "."
-            if len(first_sentence) > 140:
-                first_sentence = first_sentence[:137].rsplit(" ", 1)[0] + "..."
-            lines.append(f"  {first_sentence}")
-        lines.append("")  # blank line between options for readability
+            sentence = desc.split(". ")[0].rstrip(".")
+            if sentence and sentence not in descriptions:
+                descriptions.append(sentence)
+        if len(descriptions) >= 1:
+            break
 
-    lines.append("Which would you like?")
-    return "\n".join(lines)
-
+    if descriptions:
+        detail = descriptions[0]
+    else:
+        detail = (
+            f"Our {family_name} service provides personalised support from "
+            "NativaCare's midwifery team, based on your needs."
+        )
+    return (
+        f"{family_name} is designed to provide personalised support. "
+        f"{detail} Would you like to know more about the service or discuss booking?"
+    )
 
 def is_excluded_nanny_full_day(service: dict) -> bool:
     """NativaCare offers Nanny Training, but not the Full Day option."""
