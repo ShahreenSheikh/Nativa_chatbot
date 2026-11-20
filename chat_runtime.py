@@ -226,15 +226,18 @@ async def _topic_facts(key):
         return ""
     lines = []
     for s in _service_rows(key, services):
-        bits = [str(s.get("service_name", ""))]
-        if s.get("default_price_aed"):
-            bits.append("AED " + str(s["default_price_aed"]))
-        if s.get("duration_minutes"):
-            bits.append(str(s["duration_minutes"]) + " min")
+        # Only provide non-pricing, non-tier facts to the conversational
+        # context. Pricing/tier details must never be surfaced unless the
+        # customer explicitly asks for them.
+        family = str(s.get("family_name") or "").strip()
+        name = str(s.get("service_name") or "")
+        if family and family.lower() not in name.lower():
+            name = family
+        bits = [name]
         if s.get("location_type"):
             bits.append(str(s["location_type"]).replace("_", " "))
         line = "- " + " | ".join(b for b in bits if b)
-        desc = (s.get("short_desc") or s.get("description") or "").strip()
+        desc = (s.get("category_description") or s.get("short_desc") or s.get("description") or "").strip()
         if desc:
             line += ": " + desc[:180]
         if line not in lines:
@@ -373,17 +376,8 @@ async def get_ai_response(session_id: str, user_message: str, source: str = "web
     if reply and (_CATCH_VARIANT in reply or _CATCH_LANG in reply):
         reply = await _soften_reprompt(session, user_message, reply, source)
 
-    # 3) Asked about one service but the answer shows no price: add the real price from the catalog.
-    service_key = detect_service_key(user_message)
-    if (reply and service_key and not _is_service_list_question(user_message)
-            and not re.search(r"\bAED\s*\d", reply, re.I)
-            and result.get("state") in (_ai.STATE_BROWSING, _ai.STATE_BOOKED, _ai.STATE_SERVICE_SELECTING)):
-        try:
-            price_text = await _price_fallback(service_key)
-        except Exception:
-            price_text = ""
-        if re.search(r"\bAED\s*\d", price_text or ""):
-            reply = reply.rstrip() + "\n\n" + _format(price_text, source)
+    # 3) Do NOT append unsolicited pricing to ordinary service discussions.
+    # Pricing is handled only when the customer explicitly asks for it.
 
     # 4) Confused? Ask ONE short question instead of guessing or going silent.
     low = reply.lower()
