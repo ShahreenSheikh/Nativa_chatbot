@@ -3673,6 +3673,18 @@ async def get_ai_response(session_id: str, user_message: str,
         save_chat_log(session_id, user_message, reply)
         return response_payload(reply, session)
 
+    # Standalone greetings must never inherit the previous service or
+    # trigger a service-selection/variant flow from conversation history.
+    if re.fullmatch(
+        r"\s*(hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening|"
+        r"ass?alam\s*o\s*alaikum|salaam|salam)\s*[!.?]*\s*",
+        user_message or "", re.IGNORECASE,
+    ):
+        reply = "Hello! Welcome to NativaCare. How can we help you today?"
+        append_history(session, user_message, reply)
+        save_chat_log(session_id, user_message, reply)
+        return response_payload(reply, session)
+
     # --- LLM Call 1: Understand ---
     understanding = await understand(session, user_message)
 
