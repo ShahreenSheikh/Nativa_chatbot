@@ -381,6 +381,15 @@ def valid(value) -> bool:
     return bool(s) and s.lower() not in {"none", "null", "tbd", "unknown", "-", "skip"}
 
 
+def get_recent_service_name(session_id: str) -> str:
+    """Return the single recently discussed service for follow-up routing."""
+    session = _sessions.get(session_id) or {}
+    recent = session.get("last_recommended") or []
+    if len(recent) == 1:
+        return str(recent[0].get("service_name") or "")
+    return ""
+
+
 def cleanup_old_sessions():
     now = datetime.utcnow()
     for sid in list(_sessions):
