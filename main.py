@@ -184,11 +184,17 @@ async def chat(req:ChatRequest):
                 continue
             result["flyers"].append(path)
             sent[path] = now
-        # Match WhatsApp exactly: suppress the separate pricing text only
-        # when a pricing PDF is actually included in this response. If the
-        # 15-minute attachment cooldown prevents sending it, keep the text
-        # fallback rather than returning an empty simulator reply.
-        if any(str(path).lower().endswith(".pdf") for path in result["flyers"]):
+        # Pricing requests are PDF-only: never print prices/options in chat.
+        # If the service cannot be resolved, ask which service's pricing guide
+        # the customer wants rather than exposing catalog prices.
+        is_price_question = bool(re.search(
+            r"\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\b",
+            resolved or "", re.I
+        ))
+        if is_price_question:
+            has_pricing_pdf = any(str(path).lower().endswith(".pdf") for path in flyer_paths)
+            result["reply"] = "" if has_pricing_pdf else "Which NativaCare service would you like the pricing guide for?"
+        elif any(str(path).lower().endswith(".pdf") for path in result["flyers"]):
             result["reply"] = ""
         return result
     except Exception as e:print(f"[Route Error]: {e}");raise HTTPException(status_code=500,detail="Internal server error")
@@ -432,9 +438,25 @@ async def _handle_customer_message(msg: dict):
         )
         if before_urls:
             await _send_flyers(sender, before_urls)
-        # Match the simulator: suppress pricing text only when a pricing PDF
-        # was actually sent. If the 15-minute cooldown blocks the PDF, retain
-        # the normal text fallback.
+        # Explicit pricing questions are PDF-only. Never send prices or
+        # tier breakdowns as a WhatsApp text message, even if the 15-minute
+        # attachment cooldown prevents a repeat PDF.
+        is_price_question = bool(re.search(
+            r"\b(price|pricing|cost|costs|fee|fees|how much|rate|rates)\b",
+            resolved or "", re.I
+        ))
+        if is_price_question:
+            if before_urls and any(str(url).lower().endswith(".pdf") for url in before_urls):
+                await _send_flyers(sender, before_urls)
+                return
+            if any(str(path).lower().endswith(".pdf") for path in selected_material):
+                return  # PDF is in its resend cooldown; do not send pricing text.
+            _remember_bot_message(await send_whatsapp_message(
+                sender, "Which NativaCare service would you like the pricing guide for?"
+            ))
+            return
+        if before_urls:
+            await _send_flyers(sender, before_urls)
         if before_urls and any(str(url).lower().endswith(".pdf") for url in before_urls):
             return
         _remember_bot_message(await send_whatsapp_message(sender, reply))
