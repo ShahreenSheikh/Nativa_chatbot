@@ -1379,8 +1379,9 @@ SAFETY: Never diagnose, prescribe, or replace a midwife or doctor. For emergenci
 INSURANCE POLICY (FIXED — NEVER CONTRADICT): NativaCare services are NOT covered by any insurance. If asked about insurance, coverage, being insured, reimbursement, claims, or direct billing, clearly say: "NativaCare services are not covered by any insurance. All services are privately paid for by the client." Do not suggest that insurance coverage, direct billing, or reimbursement is available.
 
 PRICING POLICY (AUTHORITATIVE — FOLLOW THE CUSTOMER'S LATEST MESSAGE):
-- NEVER mention or volunteer any price, fee, cost, amount, pricing option, price range, or pricing PDF/guide while discussing or recommending a service.
-- Only provide pricing information when the customer's latest message explicitly asks about price, cost, fees, or how much. A general service enquiry, service selection, question about what is included, duration, suitability, availability, or booking is NOT a request for pricing.
+- NEVER mention or volunteer any price, fee, cost, amount, pricing option, price range, tier/variant name, option count, or pricing PDF/guide while discussing or recommending a service.
+- Do not reveal that a service has multiple tiers/options or describe those tiers unless the customer's latest message explicitly asks about pricing, cost, fees, how much, or available price options.
+- Only provide pricing and tier/variant information when the customer's latest message explicitly asks about price, cost, fees, how much, or pricing options. A general service enquiry, service selection, question about inclusions, duration, suitability, availability, or booking is NOT a pricing request.
 - If the customer has not explicitly asked about price, answer only the service-related question and invite them to enquire or book. Do not add a pricing sentence as a closing remark.
 - If the customer explicitly asks about price, follow the exact pricing rules below and the attachment workflow.
 - The bookable home services are Antenatal Education & Preparation, Postnatal Recovery Support, Breastfeeding & Lactation Support, and Newborn Care Training.
@@ -1452,17 +1453,18 @@ async def _build_compose_context(intent: str, slots: dict,
             None,
         )
         if active:
-            price = lead.get("price_aed") or active.get("default_price_aed") or "?"
-            parts.append(
-                f"\nACTIVE booking (the user is mid-booking THIS):\n"
-                f"- Service: {active['service_name']}\n"
-                f"- Price: AED {price}\n"
-                f"- Duration: {active.get('duration_minutes', '?')} min\n"
-                f"- Location: {active.get('location_type', '?')}\n"
-                f"- Date: {lead.get('appointment_date', 'not picked yet')}\n"
-                f"- Time: {lead.get('appointment_time', 'not picked yet')}\n"
-                f"- Midwife: {lead.get('midwife_name', 'will be assigned')}"
-            )
+            active_lines = [
+                f"- Service: {active['service_name']}",
+                f"- Location: {active.get('location_type', '?')}",
+                f"- Date: {lead.get('appointment_date', 'not picked yet')}",
+                f"- Time: {lead.get('appointment_time', 'not picked yet')}",
+                f"- Midwife: {lead.get('midwife_name', 'will be assigned')}",
+            ]
+            if intent == "price_question":
+                price = lead.get("price_aed") or active.get("default_price_aed") or "?"
+                active_lines.insert(1, f"- Price: AED {price}")
+                active_lines.insert(2, f"- Duration: {active.get('duration_minutes', '?')} min")
+            parts.append("\nACTIVE booking details:\n" + "\n".join(active_lines))
     else:
         recent = (session or {}).get("last_recommended") or []
         if len(recent) == 1:
@@ -1477,27 +1479,15 @@ async def _build_compose_context(intent: str, slots: dict,
                     s for s in services
                     if family and s.get("family_name") == family
                 ] or [recent_service]
-                details = []
-                for item in related[:8]:
-                    label = item.get("service_name", "Service")
-                    duration = item.get("duration_minutes")
-                    price = item.get("default_price_aed")
-                    bits = []
-                    if duration not in (None, ""):
-                        bits.append(f"{duration} min")
-                    if price not in (None, ""):
-                        bits.append(f"AED {price}")
-                    details.append(
-                        f"- {label}: {', '.join(bits) if bits else 'details not listed'}"
-                    )
                 parts.append(
                     "\nRECENTLY DISCUSSED SERVICE (the user is browsing, "
                     "not yet booking):\n"
                     f"- Service/family: {recent[0].get('service_name', recent_service['service_name'])}\n"
-                    + "\n".join(details)
-                    + "\nFor short follow-ups like 'how long is it?', "
-                    "'what does it include?' or 'how much?', answer about "
-                    "this service. Do not ask the user which service they mean."
+                    + ("\nAvailable options and prices for this service may be shared "
+                       "only if the latest user message explicitly asks about pricing.\n"
+                       if intent == "price_question" else
+                       "\nDo not reveal tier names, option counts, prices, or durations unless the latest user message explicitly asks for pricing.\n")
+                    + "Resolve short follow-ups about this service without asking the user to repeat it."
                 )
 
     need_services = intent in ("service_list", "price_question", "general", "faq")
