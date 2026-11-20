@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse,JSONResponse,HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from models import ChatRequest
-from ai import get_ai_response,record_staff_reply
+from ai import get_ai_response,record_staff_reply,get_recent_service_name
 from database import get_saved_appointments
 from logger import get_chat_logs,get_chat_logs_for_session
 from availability import get_availability,get_next_available_days
@@ -169,13 +169,14 @@ def health():return {"status":"ok","service":f"{CLINIC_NAME} — Midwifery Chatb
 async def chat(req:ChatRequest):
     try:
         resolved=_resolve_numbered_service_choice(req.session_id,req.message)
+        recent_service = get_recent_service_name(req.session_id)
         result=await get_ai_response(session_id=req.session_id,user_message=resolved,source=req.source or "website")
         result["session_id"]=req.session_id
         result["reply"]=_normalize_language_prompt(result.get("reply",""))
         result["reply"]=_number_service_menu(req.session_id,result.get("reply",""))
         # Return attachment metadata to every client, including the WhatsApp QA simulator.\n        # This only describes the files to attach; it does not send WhatsApp messages.\n        # Keep simulator previews consistent with WhatsApp: the same PDF
         # is shown only once per session in any 15-minute window.
-        flyer_paths = _select_flyers(resolved,result.get("reply",""),result.get("state",""),result.get("service_name") or "")
+        flyer_paths = _select_flyers(resolved,result.get("reply",""),result.get("state",""),result.get("service_name") or recent_service)
         sent = _FLYERS_SENT.setdefault(req.session_id, {})
         now = time.time()
         result["flyers"] = []
@@ -418,6 +419,7 @@ async def _handle_customer_message(msg: dict):
         if not text:
             return
         resolved = _resolve_numbered_service_choice(sid, text)
+        recent_service = get_recent_service_name(sid)
         result = await get_ai_response(sid, resolved, "whatsapp")
         reply = result.get("reply")
         if not reply:
@@ -430,14 +432,12 @@ async def _handle_customer_message(msg: dict):
         # attach its pricing PDF only when they ask about its price.
         state_after = result.get("state", "")
         selected_material = _select_flyers(
-            resolved, reply, state_after, result.get("service_name") or ""
+            resolved, reply, state_after, result.get("service_name") or recent_service
         )
         before_urls = (
             _flyer_urls(sid, selected_material, _SERVICE_FLYER_TTL)
             if not greeting else []
         )
-        if before_urls:
-            await _send_flyers(sender, before_urls)
         # Explicit pricing questions are PDF-only. Never send prices or
         # tier breakdowns as a WhatsApp text message, even if the 15-minute
         # attachment cooldown prevents a repeat PDF.
