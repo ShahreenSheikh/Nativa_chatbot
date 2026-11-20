@@ -98,7 +98,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 _sessions: dict = {}
-SESSION_TTL_SECONDS = 60 * 60
+SESSION_TTL_SECONDS = 24 * 60 * 60
 
 # LLM provider: Cerebras Cloud (OpenAI-compatible API).
 #
@@ -1926,7 +1926,8 @@ async def render_variant_choice(family_name: str, variants: list) -> str:
         )
     return (
         f"{family_name} is designed to provide personalised support. "
-        f"{detail} Would you like to know more about the service or discuss booking?"
+        f"{detail} Would you like to continue learning about {family_name}, "
+        "or would you prefer an overview of all NativaCare services?"
     )
 
 def is_excluded_nanny_full_day(service: dict) -> bool:
